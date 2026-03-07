@@ -13,6 +13,7 @@ import (
 )
 
 const (
+	orgName       = "javaBin"
 	registryOwner = "javaBin"
 	registryRepo  = "registry"
 	apiBase       = "https://api.github.com"
@@ -158,6 +159,36 @@ func doRequest(req *http.Request) ([]byte, error) {
 		return nil, fmt.Errorf("GitHub API %s %s: %d %s", req.Method, req.URL.Path, resp.StatusCode, string(body))
 	}
 	return body, nil
+}
+
+// CreateRepoFromTemplate creates a new repo under javaBin/ from a template repo.
+// Returns the clone URL of the new repo.
+func CreateRepoFromTemplate(token, templateRepo, name, description string, private bool) (string, error) {
+	url := fmt.Sprintf("%s/repos/%s/%s/generate", apiBase, orgName, templateRepo)
+	payload := map[string]interface{}{
+		"owner":       orgName,
+		"name":        name,
+		"description": description,
+		"private":     private,
+	}
+	respBody, err := ghPost(token, url, payload)
+	if err != nil {
+		return "", err
+	}
+	var result struct {
+		CloneURL string `json:"clone_url"`
+	}
+	if err := json.Unmarshal(respBody, &result); err != nil {
+		return "", err
+	}
+	return result.CloneURL, nil
+}
+
+// RepoExists checks if a repo exists under javaBin/.
+func RepoExists(token, name string) bool {
+	url := fmt.Sprintf("%s/repos/%s/%s", apiBase, orgName, name)
+	_, err := ghGet(token, url)
+	return err == nil
 }
 
 func getenv(key string) string {
