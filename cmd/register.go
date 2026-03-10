@@ -2,9 +2,7 @@ package cmd
 
 import (
 	"bufio"
-	"encoding/json"
 	"fmt"
-	"net/http"
 	"os"
 	"strings"
 
@@ -14,10 +12,15 @@ import (
 )
 
 var registerCmd = &cobra.Command{
-	Use:   "register",
-	Short: "Register a new app with the Javabin platform",
-	Long:  "Interactive wizard that creates a registration PR against javaBin/registry.",
+	Use:   "register-team",
+	Short: "Register a new team with the Javabin platform",
+	Long:  "Interactive wizard that creates a team registration PR against javaBin/registry.",
 	RunE:  runRegister,
+}
+
+type member struct {
+	Google string
+	GitHub string
 }
 
 func runRegister(cmd *cobra.Command, args []string) error {
@@ -41,53 +44,52 @@ func runRegister(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("GitHub auth required: %w", err)
 	}
 
-	// Repo name
-	repoName := prompt("Repository name (e.g. moresleep)", "")
-	if repoName == "" {
-		return fmt.Errorf("repository name is required")
+	// Team name
+	teamName := prompt("Team name (lowercase, e.g. video)", "")
+	if teamName == "" {
+		return fmt.Errorf("team name is required")
+	}
+	teamName = strings.ToLower(teamName)
+
+	// Description
+	description := prompt("Description (what the team does)", "")
+	if description == "" {
+		return fmt.Errorf("description is required")
 	}
 
-	// Validate repo exists
-	fmt.Printf("Checking javaBin/%s exists... ", repoName)
-	if !repoExists(token, repoName) {
-		fmt.Println("not found")
-		return fmt.Errorf("repository javaBin/%s does not exist", repoName)
-	}
-	fmt.Println("ok")
-
-	// List teams from registry
-	fmt.Println("\nAvailable teams:")
-	teams, err := listTeams(token)
-	if err != nil {
-		fmt.Printf("  (could not fetch teams: %v)\n", err)
-	} else {
-		for _, t := range teams {
-			fmt.Printf("  - %s\n", t)
+	// Members
+	fmt.Println("\nAdd team members (at least one). Leave blank to stop.")
+	var members []member
+	for i := 1; ; i++ {
+		fmt.Printf("\n--- Member %d ---\n", i)
+		google := prompt("Google handle (firstname.lastname)", "")
+		if google == "" {
+			if len(members) == 0 {
+				fmt.Println("At least one member is required.")
+				continue
+			}
+			break
 		}
+		github := prompt("GitHub username", "")
+		if github == "" {
+			fmt.Println("GitHub username is required for each member.")
+			continue
+		}
+		members = append(members, member{Google: google, GitHub: github})
 	}
-	team := prompt("\nTeam", "")
-	if team == "" {
-		return fmt.Errorf("team is required")
-	}
-
-	// Auth
-	fmt.Println("\nAuth options: internal, external, both, none")
-	auth := prompt("Auth", "none")
 
 	// Budget
-	budget := prompt("Monthly budget (NOK)", "1000")
-
-	// Dev environment
-	devEnv := prompt("Need a dev environment? (y/n)", "n")
+	budget := prompt("\nMonthly budget (NOK)", "500")
 
 	// Confirm
-	fmt.Println("\n--- Registration Summary ---")
-	fmt.Printf("  Repo:   javaBin/%s\n", repoName)
-	fmt.Printf("  Team:   %s\n", team)
-	fmt.Printf("  Auth:   %s\n", auth)
-	fmt.Printf("  Budget: %s NOK\n", budget)
-	if strings.ToLower(devEnv) == "y" {
-		fmt.Println("  Dev:    yes")
+	fmt.Println("\n--- Team Registration Summary ---")
+	fmt.Printf("  Name:         %s\n", teamName)
+	fmt.Printf("  Description:  %s\n", description)
+	fmt.Printf("  Google Group: team-%s@java.no\n", teamName)
+	fmt.Printf("  Budget:       %s NOK/mo\n", budget)
+	fmt.Println("  Members:")
+	for _, m := range members {
+		fmt.Printf("    - %s (github: %s)\n", m.Google, m.GitHub)
 	}
 	fmt.Println()
 
@@ -97,24 +99,29 @@ func runRegister(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 
-	// Build app YAML content
+	// Build team YAML content
 	var yamlLines []string
-	yamlLines = append(yamlLines, fmt.Sprintf("name: %s", repoName))
-	yamlLines = append(yamlLines, fmt.Sprintf("team: %s", team))
-	yamlLines = append(yamlLines, fmt.Sprintf("repo: javaBin/%s", repoName))
-	if auth != "none" && auth != "" {
-		yamlLines = append(yamlLines, fmt.Sprintf("auth: %s", auth))
+	yamlLines = append(yamlLines, fmt.Sprintf("name: %s", teamName))
+	yamlLines = append(yamlLines, fmt.Sprintf("description: %s", description))
+	yamlLines = append(yamlLines, "members:")
+	for _, m := range members {
+		yamlLines = append(yamlLines, fmt.Sprintf("  - google: %s", m.Google))
+		yamlLines = append(yamlLines, fmt.Sprintf("    github: %s", m.GitHub))
 	}
-	if budget != "1000" && budget != "" {
-		yamlLines = append(yamlLines, fmt.Sprintf("budget_alert_nok: %s", budget))
+	if budget != "500" && budget != "" {
+		yamlLines = append(yamlLines, fmt.Sprintf("budget_nok: %s", budget))
 	}
 	yamlContent := strings.Join(yamlLines, "\n") + "\n"
 
 	// Create PR via GitHub API
-	filePath := fmt.Sprintf("apps/%s.yaml", repoName)
-	branchName := fmt.Sprintf("register-%s", repoName)
-	prTitle := fmt.Sprintf("Register %s", repoName)
-	prBody := fmt.Sprintf("Register `javaBin/%s` with team `%s`.\n\nCreated by `javabin register`.", repoName, team)
+	filePath := fmt.Sprintf("teams/%s.yaml", teamName)
+	branchName := fmt.Sprintf("register-team-%s", teamName)
+	prTitle := fmt.Sprintf("Register team %s", teamName)
+	prBody := fmt.Sprintf("Register team `%s`.\n\n**Description:** %s\n\n**Members:**\n", teamName, description)
+	for _, m := range members {
+		prBody += fmt.Sprintf("- %s (@%s)\n", m.Google, m.GitHub)
+	}
+	prBody += fmt.Sprintf("\nGoogle Group: `team-%s@java.no`\n\nCreated by `javabin register-team`.", teamName)
 
 	prURL, err := gh.CreateRegistrationPR(token, branchName, filePath, yamlContent, prTitle, prBody)
 	if err != nil {
@@ -123,45 +130,9 @@ func runRegister(cmd *cobra.Command, args []string) error {
 
 	fmt.Printf("\nRegistration PR created: %s\n", prURL)
 	fmt.Println("A platform owner will review and merge it.")
+	fmt.Println("\nAfter your team is created, add repos to your GitHub team:")
+	fmt.Printf("  gh api orgs/javaBin/teams/%s/repos -f owner=javaBin -f repo=REPO -f permission=push\n", teamName)
 
 	_ = config.EnsureConfigDir()
 	return nil
-}
-
-func repoExists(token, name string) bool {
-	req, _ := http.NewRequest("GET", fmt.Sprintf("https://api.github.com/repos/javaBin/%s", name), nil)
-	req.Header.Set("Authorization", "Bearer "+token)
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return false
-	}
-	defer resp.Body.Close()
-	return resp.StatusCode == 200
-}
-
-func listTeams(token string) ([]string, error) {
-	url := "https://api.github.com/repos/javaBin/registry/contents/teams"
-	req, _ := http.NewRequest("GET", url, nil)
-	req.Header.Set("Authorization", "Bearer "+token)
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != 200 {
-		return nil, fmt.Errorf("HTTP %d", resp.StatusCode)
-	}
-	var items []struct {
-		Name string `json:"name"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&items); err != nil {
-		return nil, err
-	}
-	var teams []string
-	for _, item := range items {
-		if strings.HasSuffix(item.Name, ".yaml") {
-			teams = append(teams, strings.TrimSuffix(item.Name, ".yaml"))
-		}
-	}
-	return teams, nil
 }

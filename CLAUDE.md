@@ -8,7 +8,8 @@ Developer CLI for the Javabin platform, written in Go.
 main.go                   Entrypoint — calls cmd.Execute()
 cmd/
   root.go                 Cobra root command, registers subcommands
-  register.go             Interactive app registration wizard
+  init.go                 Interactive app scaffolding wizard
+  register.go             Interactive team registration wizard
   status.go               Project status (costs, ECS services)
   whoami.go               Show AWS + GitHub identity
 internal/
@@ -33,7 +34,8 @@ internal/
 
 | Command | What it does |
 |---------|-------------|
-| `javabin register` | Interactive wizard — prompts for repo, team, auth, budget; creates a registration PR against `javaBin/registry` via GitHub API |
+| `javabin register-team` | Interactive wizard — prompts for team name, description, members (google + github), and budget; creates a team registration PR against `javaBin/registry` (`teams/{name}.yaml`) |
+| `javabin init` | Interactive wizard — scaffolds a new app repo from `javaBin/app-template`, writes `app.yaml`, `Dockerfile`, and deploy workflow, then prints next steps for adding the repo to a GitHub team |
 | `javabin status` | Shows month-to-date cost (Cost Explorer) and ECS service status. Infers project from git remote or accepts `--project` flag |
 | `javabin whoami` | Shows AWS identity (STS GetCallerIdentity) and GitHub user (gh API) |
 
@@ -59,4 +61,4 @@ Releases are built with GoReleaser on semver tags. Binaries go to GitHub Release
 ## Related
 
 - [javaBin/platform](https://github.com/javaBin/platform) — infrastructure the CLI queries
-- [javaBin/registry](https://github.com/javaBin/registry) — where `javabin register` creates PRs
+- [javaBin/registry](https://github.com/javaBin/registry) — where `javabin register-team` creates PRs
