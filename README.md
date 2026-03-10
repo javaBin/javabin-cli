@@ -11,12 +11,26 @@ go install github.com/javaBin/javabin-cli@latest  # Go toolchain
 
 ## Commands
 
-### `javabin register`
+### `javabin register-team`
 
-Interactive wizard to register a new app with the platform. Creates a PR against [javaBin/registry](https://github.com/javaBin/registry).
+Interactive wizard to register a new team with the platform. Prompts for team name, description, members (Google handle + GitHub username), and optional budget. Creates a PR against [javaBin/registry](https://github.com/javaBin/registry) with `teams/{name}.yaml`.
+
+After your team is created, add repos to your GitHub team:
 
 ```bash
-javabin register
+gh api orgs/javaBin/teams/TEAM/repos -f owner=javaBin -f repo=REPO -f permission=push
+```
+
+```bash
+javabin register-team
+```
+
+### `javabin init`
+
+Interactive wizard to scaffold a new app repo from the Javabin app template. Creates the repo under `javaBin/`, writes `app.yaml`, `Dockerfile`, and a deploy workflow, then prints next steps for adding the repo to your GitHub team.
+
+```bash
+javabin init
 ```
 
 ### `javabin status`
