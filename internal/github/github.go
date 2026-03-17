@@ -53,8 +53,8 @@ func CreateRegistrationPR(token, branch, filePath, content, title, body string) 
 		return "", fmt.Errorf("create branch: %w", err)
 	}
 
-	// Create/update file on branch
-	if err := createFile(token, branch, filePath, content, "Register "+strings.TrimPrefix(filePath, "apps/")); err != nil {
+	// Create/update file on branch — use PR title as commit message
+	if err := createFile(token, branch, filePath, content, title); err != nil {
 		return "", fmt.Errorf("create file: %w", err)
 	}
 
