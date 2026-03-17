@@ -2,7 +2,9 @@ package cmd
 
 import (
 	"bufio"
+	"encoding/json"
 	"fmt"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -18,7 +20,7 @@ const templateRepo = "app-template"
 var initCmd = &cobra.Command{
 	Use:   "init",
 	Short: "Scaffold a new app repo from the Javabin app template",
-	Long:  "Interactive wizard that creates a new repo under javaBin/ from the app-template, customizes it for your runtime, and optionally registers it with the platform.",
+	Long:  "Interactive wizard that creates a new repo under javaBin/ from the app-template and customizes it for your runtime.",
 	RunE:  runInit,
 }
 
@@ -265,26 +267,38 @@ jobs:
 	}
 	fmt.Println("done")
 
-	// Optionally register
-	doRegister := prompt("\nRegister with platform now? (y/n)", "y")
-	if strings.ToLower(doRegister) == "y" {
-		filePath := fmt.Sprintf("apps/%s.yaml", name)
-		branchName := fmt.Sprintf("register-%s", name)
-		prTitle := fmt.Sprintf("Register %s", name)
-		prBody := fmt.Sprintf("Register `javaBin/%s` with team `%s`.\n\nCreated by `javabin init`.", name, team)
-		regYaml := fmt.Sprintf("name: %s\nteam: %s\nrepo: javaBin/%s\n", name, team, name)
-
-		prURL, err := gh.CreateRegistrationPR(token, branchName, filePath, regYaml, prTitle, prBody)
-		if err != nil {
-			fmt.Printf("  Could not create registration PR: %v\n", err)
-			fmt.Println("  You can register later with: javabin register")
-		} else {
-			fmt.Printf("  Registration PR: %s\n", prURL)
-		}
-	}
-
 	fmt.Printf("\nRepo ready: https://github.com/javaBin/%s\n", name)
-	fmt.Printf("Next: cd %s && start coding!\n", name)
+	fmt.Println("\nNext steps:")
+	fmt.Println("  1. Add this repo to your GitHub team:")
+	fmt.Printf("     gh api orgs/javaBin/teams/%s/repos -f owner=javaBin -f repo=%s -f permission=push\n", team, name)
+	fmt.Println("  2. Push to main — the platform CI takes over")
 
 	return nil
+}
+
+func listTeams(token string) ([]string, error) {
+	url := "https://api.github.com/repos/javaBin/registry/contents/teams"
+	req, _ := http.NewRequest("GET", url, nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		return nil, fmt.Errorf("HTTP %d", resp.StatusCode)
+	}
+	var items []struct {
+		Name string `json:"name"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&items); err != nil {
+		return nil, err
+	}
+	var teams []string
+	for _, item := range items {
+		if strings.HasSuffix(item.Name, ".yaml") {
+			teams = append(teams, strings.TrimSuffix(item.Name, ".yaml"))
+		}
+	}
+	return teams, nil
 }
