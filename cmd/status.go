@@ -3,38 +3,75 @@ package cmd
 import (
 	"context"
 	"fmt"
-	"os/exec"
+	"os"
 	"strings"
 
 	"github.com/javaBin/javabin-cli/internal/aws"
-	"github.com/javaBin/javabin-cli/internal/config"
 	"github.com/spf13/cobra"
+	"gopkg.in/yaml.v3"
 )
 
-var projectFlag string
+var teamFlag string
+var serviceFlag string
 
 var statusCmd = &cobra.Command{
 	Use:   "status",
-	Short: "Show project status (costs, services, deployments)",
-	RunE:  runStatus,
+	Short: "Show team costs and ECS service status",
+	Long: `Show month-to-date AWS costs for a team and ECS service status.
+
+Flags --team and --service override auto-detection. If run from a directory
+with an app.yaml, team and service name are read from it automatically.`,
+	RunE: runStatus,
 }
 
 func init() {
-	statusCmd.Flags().StringVar(&projectFlag, "project", "", "Project name (inferred from git remote if not set)")
+	statusCmd.Flags().StringVar(&teamFlag, "team", "", "Team name (reads from app.yaml if not set)")
+	statusCmd.Flags().StringVar(&serviceFlag, "service", "", "Service name (reads from app.yaml if not set)")
+}
+
+type appYaml struct {
+	Name string `yaml:"name"`
+	Team string `yaml:"team"`
+}
+
+func readAppYaml() *appYaml {
+	data, err := os.ReadFile("app.yaml")
+	if err != nil {
+		return nil
+	}
+	var app appYaml
+	if err := yaml.Unmarshal(data, &app); err != nil {
+		return nil
+	}
+	return &app
 }
 
 func runStatus(cmd *cobra.Command, args []string) error {
-	project := projectFlag
-	if project == "" {
-		project = inferProject()
-	}
-	if project == "" {
-		return fmt.Errorf("could not infer project name — use --project flag or run from a javaBin repo")
+	team := teamFlag
+	service := serviceFlag
+
+	if team == "" || service == "" {
+		if app := readAppYaml(); app != nil {
+			if team == "" {
+				team = app.Team
+			}
+			if service == "" {
+				service = app.Name
+			}
+		}
 	}
 
-	fmt.Printf("Project: %s\n\n", project)
+	if team == "" {
+		return fmt.Errorf("could not determine team — use --team flag or run from a directory with app.yaml")
+	}
+
+	fmt.Printf("Team: %s\n", team)
+	if service != "" {
+		fmt.Printf("Service: %s\n", service)
+	}
+	fmt.Println()
+
 	ctx := context.Background()
-
 	cfg, err := aws.LoadConfig(ctx)
 	if err != nil {
 		return fmt.Errorf("AWS credentials not configured: %w", err)
@@ -42,11 +79,11 @@ func runStatus(cmd *cobra.Command, args []string) error {
 
 	// Cost this month
 	fmt.Println("--- Costs (month-to-date) ---")
-	cost, err := aws.GetMonthlyCost(ctx, cfg, project)
+	cost, err := aws.GetTeamMonthlyCost(ctx, cfg, team)
 	if err != nil {
 		fmt.Printf("  Could not fetch costs: %v\n", err)
 	} else {
-		fmt.Printf("  Spend: $%.2f\n", cost)
+		fmt.Printf("  Team spend: $%.2f\n", cost)
 	}
 
 	// ECS services
@@ -54,41 +91,27 @@ func runStatus(cmd *cobra.Command, args []string) error {
 	services, err := aws.ListServices(ctx, cfg, "javabin-platform")
 	if err != nil {
 		fmt.Printf("  Could not list services: %v\n", err)
-	} else if len(services) == 0 {
-		fmt.Println("  No running services")
 	} else {
+		prefix := team + "-"
+		found := false
 		for _, svc := range services {
-			if strings.Contains(svc.Name, project) {
-				fmt.Printf("  %s  running=%d desired=%d\n", svc.Name, svc.RunningCount, svc.DesiredCount)
+			if !strings.HasPrefix(svc.Name, prefix) {
+				continue
+			}
+			if service != "" && svc.Name != prefix+service {
+				continue
+			}
+			fmt.Printf("  %s  running=%d desired=%d\n", svc.Name, svc.RunningCount, svc.DesiredCount)
+			found = true
+		}
+		if !found {
+			if service != "" {
+				fmt.Printf("  No services matching %s%s\n", prefix, service)
+			} else {
+				fmt.Printf("  No services matching %s*\n", prefix)
 			}
 		}
 	}
 
-	// TODO: Last 5 deployments (requires ECS describe-services with deployments)
-	// TODO: Untagged resources (requires Config or resource group tagging API)
-
-	_ = config.EnsureConfigDir()
 	return nil
-}
-
-func inferProject() string {
-	out, err := exec.Command("git", "remote", "get-url", "origin").Output()
-	if err != nil {
-		return ""
-	}
-	url := strings.TrimSpace(string(out))
-	// Handle both HTTPS and SSH URLs
-	// https://github.com/javaBin/moresleep.git -> moresleep
-	// git@github.com:javaBin/moresleep.git -> moresleep
-	for _, prefix := range []string{
-		"https://github.com/javaBin/",
-		"git@github.com:javaBin/",
-	} {
-		if strings.HasPrefix(url, prefix) {
-			name := strings.TrimPrefix(url, prefix)
-			name = strings.TrimSuffix(name, ".git")
-			return name
-		}
-	}
-	return ""
 }

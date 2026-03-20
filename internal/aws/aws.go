@@ -39,8 +39,8 @@ func GetCallerIdentity(ctx context.Context, cfg aws.Config) (*CallerIdentity, er
 	}, nil
 }
 
-// GetMonthlyCost returns month-to-date cost for a project tag.
-func GetMonthlyCost(ctx context.Context, cfg aws.Config, project string) (float64, error) {
+// GetTeamMonthlyCost returns month-to-date cost for a team tag.
+func GetTeamMonthlyCost(ctx context.Context, cfg aws.Config, team string) (float64, error) {
 	client := costexplorer.NewFromConfig(cfg, func(o *costexplorer.Options) {
 		o.Region = "us-east-1" // Cost Explorer is global
 	})
@@ -57,8 +57,8 @@ func GetMonthlyCost(ctx context.Context, cfg aws.Config, project string) (float6
 		Metrics:     []string{"UnblendedCost"},
 		Filter: &cetypes.Expression{
 			Tags: &cetypes.TagValues{
-				Key:    aws.String("service"),
-				Values: []string{project},
+				Key:    aws.String("team"),
+				Values: []string{team},
 			},
 		},
 	})
