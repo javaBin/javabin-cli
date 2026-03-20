@@ -22,6 +22,7 @@ brews:
   - repository:
       owner: javaBin
       name: homebrew-tap
+      token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
     homepage: https://github.com/javaBin/javabin-cli
     description: Developer CLI for the Javabin platform
     install: |
