@@ -13,6 +13,8 @@ import (
 
 var teamFlag string
 var serviceFlag string
+var resourcesFlag bool
+var periodFlag string
 
 var statusCmd = &cobra.Command{
 	Use:   "status",
@@ -20,13 +22,18 @@ var statusCmd = &cobra.Command{
 	Long: `Show month-to-date AWS costs for a team and ECS service status.
 
 Flags --team and --service override auto-detection. If run from a directory
-with an app.yaml, team and service name are read from it automatically.`,
+with an app.yaml, team and service name are read from it automatically.
+
+Use --resources to show resource-level cost breakdown from CUR data via Athena.
+Use --period to control the time window (day, week, month).`,
 	RunE: runStatus,
 }
 
 func init() {
 	statusCmd.Flags().StringVar(&teamFlag, "team", "", "Team name (reads from app.yaml if not set)")
 	statusCmd.Flags().StringVar(&serviceFlag, "service", "", "Service name (reads from app.yaml if not set)")
+	statusCmd.Flags().BoolVarP(&resourcesFlag, "resources", "r", false, "Show resource-level cost breakdown (requires CUR)")
+	statusCmd.Flags().StringVar(&periodFlag, "period", "month", "Time period for resource costs: day, week, month")
 }
 
 type appYaml struct {
@@ -84,6 +91,21 @@ func runStatus(cmd *cobra.Command, args []string) error {
 		fmt.Printf("  Could not fetch costs: %v\n", err)
 	} else {
 		fmt.Printf("  Team spend: $%.2f\n", cost)
+	}
+
+	// Resource-level breakdown from CUR
+	if resourcesFlag {
+		fmt.Printf("\n--- Top Resources (%s) ---\n", periodFlag)
+		resources, err := aws.GetTeamResourceCosts(ctx, cfg, team, periodFlag)
+		if err != nil {
+			fmt.Printf("  Could not fetch resources: %v\n", err)
+		} else if len(resources) == 0 {
+			fmt.Println("  No CUR data available yet")
+		} else {
+			for _, r := range resources {
+				fmt.Printf("  %-40s %-20s $%.2f\n", r.FriendlyName(), r.Service, r.Cost)
+			}
+		}
 	}
 
 	// ECS services
