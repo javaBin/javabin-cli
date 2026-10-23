@@ -12,6 +12,7 @@ cmd/
   register.go             Interactive team registration wizard
   status.go               Project status (costs, ECS services)
   whoami.go               Show AWS + GitHub identity
+  secret.go               List/set app.yaml secrets in SSM
 internal/
   aws/aws.go              AWS SDK helpers (STS, Cost Explorer, ECS)
   config/config.go        Config directory (~/.javabin/)
@@ -37,6 +38,7 @@ internal/
 | `javabin register-team` | Interactive wizard — prompts for team name, description, members (google + github), and budget; creates a team registration PR against `javaBin/registry` (`teams/{name}.yaml`) |
 | `javabin init` | Interactive wizard — scaffolds a new app repo from `javaBin/app-template`, writes `app.yaml`, `Dockerfile`, and deploy workflow, then prints next steps for adding the repo to a GitHub team |
 | `javabin status` | Shows month-to-date cost (Cost Explorer) and ECS service status. Infers project from git remote or accepts `--project` flag |
+| `javabin secret list` / `javabin secret set <name> [--stdin] [--restart]` | Run in an app repo: shows which `resources.secrets` from `app.yaml` still hold the platform's `PLACEHOLDER` (never prints values) and sets a value as an SSM SecureString under `/javabin/apps/{team}/{app}/`; `--restart` forces a new ECS deployment so tasks pick it up. Needs the `javabin-developer` SSO role |
 | `javabin whoami` | Shows AWS identity (STS GetCallerIdentity) and GitHub user (gh API) |
 
 ## Build and Test
