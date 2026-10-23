@@ -35,7 +35,7 @@ internal/
 | Command | What it does |
 |---------|-------------|
 | `javabin register-team` | Interactive wizard — prompts for team name, description, members (google + github), and budget; creates a team registration PR against `javaBin/registry` (`teams/{name}.yaml`) |
-| `javabin init` | Interactive wizard — scaffolds a new app repo from `javaBin/app-template`, writes `app.yaml`, `Dockerfile`, and deploy workflow, then prints next steps for adding the repo to a GitHub team |
+| `javabin init` | Interactive wizard — scaffolds a new app repo from `javaBin/app-template`, writes `app.yaml` (with `routing:`), a runtime `Dockerfile` (Maven for java, Gradle for kotlin) and `deploy.yml` (with the permissions the platform pipeline needs), then prints the command to add the repo to the app.yaml team |
 | `javabin status` | Shows month-to-date cost (Cost Explorer) and ECS service status. Infers project from git remote or accepts `--project` flag |
 | `javabin whoami` | Shows AWS identity (STS GetCallerIdentity) and GitHub user (gh API) |
 
