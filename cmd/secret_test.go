@@ -1,10 +1,15 @@
 package cmd
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/ssm"
+	ssmtypes "github.com/aws/aws-sdk-go-v2/service/ssm/types"
 )
 
 func writeAppYaml(t *testing.T, body string) string {
@@ -47,5 +52,47 @@ func TestReadSecretValueRejectsEmptyAndPlaceholder(t *testing.T) {
 		if _, err := readSecretValue(strings.NewReader(in), true, "sp_user"); err == nil {
 			t.Errorf("expected rejection for %q", in)
 		}
+	}
+}
+
+type fakeSSM struct {
+	exists bool
+	puts   []*ssm.PutParameterInput
+}
+
+func (f *fakeSSM) GetParameter(_ context.Context, in *ssm.GetParameterInput, _ ...func(*ssm.Options)) (*ssm.GetParameterOutput, error) {
+	if !f.exists {
+		return nil, &ssmtypes.ParameterNotFound{}
+	}
+	return &ssm.GetParameterOutput{Parameter: &ssmtypes.Parameter{Name: in.Name, Value: aws.String(placeholder)}}, nil
+}
+
+func (f *fakeSSM) PutParameter(_ context.Context, in *ssm.PutParameterInput, _ ...func(*ssm.Options)) (*ssm.PutParameterOutput, error) {
+	f.puts = append(f.puts, in)
+	return &ssm.PutParameterOutput{}, nil
+}
+
+func TestSetSecretRefusesToCreateMissingParameter(t *testing.T) {
+	f := &fakeSSM{exists: false}
+	err := setSecret(context.Background(), f, "/javabin/apps/t/a/x", "v")
+	if err == nil || !strings.Contains(err.Error(), "does not exist yet") {
+		t.Fatalf("expected not-exist error, got %v", err)
+	}
+	if len(f.puts) != 0 {
+		t.Error("PutParameter must not be called for a missing parameter")
+	}
+}
+
+func TestSetSecretOverwritesExistingParameter(t *testing.T) {
+	f := &fakeSSM{exists: true}
+	if err := setSecret(context.Background(), f, "/javabin/apps/t/a/x", "v"); err != nil {
+		t.Fatal(err)
+	}
+	if len(f.puts) != 1 {
+		t.Fatalf("expected 1 put, got %d", len(f.puts))
+	}
+	p := f.puts[0]
+	if aws.ToString(p.Value) != "v" || !aws.ToBool(p.Overwrite) || p.Type != ssmtypes.ParameterTypeSecureString {
+		t.Errorf("unexpected put input: %+v", p)
 	}
 }

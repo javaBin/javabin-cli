@@ -7,10 +7,10 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/signal"
 	"strings"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
-	"github.com/aws/aws-sdk-go-v2/service/ecs"
 	"github.com/aws/aws-sdk-go-v2/service/ssm"
 	ssmtypes "github.com/aws/aws-sdk-go-v2/service/ssm/types"
 	"github.com/spf13/cobra"
@@ -22,7 +22,6 @@ import (
 
 const (
 	project     = "javabin"
-	clusterName = "javabin-platform"
 	placeholder = "PLACEHOLDER"
 )
 
@@ -71,8 +70,13 @@ func (a *appSecrets) declares(name string) bool {
 var (
 	secretAppYaml string
 	secretStdin   bool
-	secretRestart bool
 )
+
+// ssmAPI is the subset of the SSM client the secret commands use (fakeable in tests).
+type ssmAPI interface {
+	GetParameter(ctx context.Context, in *ssm.GetParameterInput, opts ...func(*ssm.Options)) (*ssm.GetParameterOutput, error)
+	PutParameter(ctx context.Context, in *ssm.PutParameterInput, opts ...func(*ssm.Options)) (*ssm.PutParameterOutput, error)
+}
 
 var secretCmd = &cobra.Command{
 	Use:   "secret",
@@ -108,8 +112,10 @@ var secretListCmd = &cobra.Command{
 	},
 }
 
-// secretStatus never prints the value, only whether it is set.
-func secretStatus(ctx context.Context, client *ssm.Client, path string) string {
+// secretStatus never prints the value, only whether it is set. Decrypting is
+// deliberate: it is the only way to compare against PLACEHOLDER. The value is
+// never printed or stored.
+func secretStatus(ctx context.Context, client ssmAPI, path string) string {
 	out, err := client.GetParameter(ctx, &ssm.GetParameterInput{Name: aws.String(path), WithDecryption: aws.Bool(true)})
 	var notFound *ssmtypes.ParameterNotFound
 	switch {
@@ -149,31 +155,36 @@ var secretSetCmd = &cobra.Command{
 			return err
 		}
 		path := secretPath(app, name)
-		if _, err := ssm.NewFromConfig(cfg).PutParameter(ctx, &ssm.PutParameterInput{
-			Name:      aws.String(path),
-			Value:     aws.String(value),
-			Type:      ssmtypes.ParameterTypeSecureString,
-			Overwrite: aws.Bool(true),
-		}); err != nil {
-			return fmt.Errorf("set %s: %w", path, err)
+		if err := setSecret(ctx, ssm.NewFromConfig(cfg), path, value); err != nil {
+			return err
 		}
 		fmt.Printf("Set %s\n", path)
-
-		service := app.Team + "-" + app.Name
-		if !secretRestart {
-			fmt.Printf("Running tasks keep the old value until they restart. Re-run with --restart, or:\n  aws ecs update-service --cluster %s --service %s --force-new-deployment\n", clusterName, service)
-			return nil
-		}
-		if _, err := ecs.NewFromConfig(cfg).UpdateService(ctx, &ecs.UpdateServiceInput{
-			Cluster:            aws.String(clusterName),
-			Service:            aws.String(service),
-			ForceNewDeployment: true,
-		}); err != nil {
-			return fmt.Errorf("restart %s: %w", service, err)
-		}
-		fmt.Printf("Restarting %s — new tasks get the new value.\n", service)
+		fmt.Printf("The platform will restart the service %s-%s within a minute so new tasks get the new value.\n", app.Team, app.Name)
 		return nil
 	},
+}
+
+// setSecret overwrites an existing secret parameter. It never creates one: the
+// platform creates declared secrets on deploy (and IAM denies writes to
+// parameters not tagged with the team).
+func setSecret(ctx context.Context, client ssmAPI, path, value string) error {
+	_, err := client.GetParameter(ctx, &ssm.GetParameterInput{Name: aws.String(path)})
+	var notFound *ssmtypes.ParameterNotFound
+	if errors.As(err, &notFound) {
+		return fmt.Errorf("%s does not exist yet — deploy the app first (the platform creates declared secrets)", path)
+	}
+	if err != nil {
+		return fmt.Errorf("check %s: %w", path, err)
+	}
+	if _, err := client.PutParameter(ctx, &ssm.PutParameterInput{
+		Name:      aws.String(path),
+		Value:     aws.String(value),
+		Type:      ssmtypes.ParameterTypeSecureString,
+		Overwrite: aws.Bool(true),
+	}); err != nil {
+		return fmt.Errorf("set %s: %w", path, err)
+	}
+	return nil
 }
 
 // readSecretValue reads one value without echoing it on a terminal.
@@ -187,7 +198,7 @@ func readSecretValue(in io.Reader, fromStdin bool, name string) (string, error) 
 		value = strings.TrimRight(string(data), "\r\n")
 	} else if f, ok := in.(*os.File); ok && term.IsTerminal(int(f.Fd())) {
 		fmt.Printf("Value for %s (input hidden): ", name)
-		data, err := term.ReadPassword(int(f.Fd()))
+		data, err := readPasswordRestoringOnInterrupt(int(f.Fd()))
 		fmt.Println()
 		if err != nil {
 			return "", err
@@ -206,10 +217,35 @@ func readSecretValue(in io.Reader, fromStdin bool, name string) (string, error) 
 	return value, nil
 }
 
+// readPasswordRestoringOnInterrupt reads hidden input and, if the user hits
+// Ctrl-C mid-prompt, restores the terminal (echo on) before exiting non-zero.
+func readPasswordRestoringOnInterrupt(fd int) ([]byte, error) {
+	state, err := term.GetState(fd)
+	if err != nil {
+		return nil, err
+	}
+	sigs := make(chan os.Signal, 1)
+	signal.Notify(sigs, os.Interrupt)
+	done := make(chan struct{})
+	defer func() {
+		signal.Stop(sigs)
+		close(done)
+	}()
+	go func() {
+		select {
+		case <-sigs:
+			_ = term.Restore(fd, state)
+			fmt.Println()
+			os.Exit(130)
+		case <-done:
+		}
+	}()
+	return term.ReadPassword(fd)
+}
+
 func init() {
 	secretCmd.PersistentFlags().StringVar(&secretAppYaml, "app-yaml", "app.yaml", "path to app.yaml")
 	secretSetCmd.Flags().BoolVar(&secretStdin, "stdin", false, "read the value from stdin (e.g. from a password manager)")
-	secretSetCmd.Flags().BoolVar(&secretRestart, "restart", false, "restart the ECS service so tasks pick up the new value")
 	secretCmd.AddCommand(secretListCmd, secretSetCmd)
 	rootCmd.AddCommand(secretCmd)
 }

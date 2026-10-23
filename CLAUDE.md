@@ -38,7 +38,7 @@ internal/
 | `javabin register-team` | Interactive wizard — prompts for team name, description, members (google + github), and budget; creates a team registration PR against `javaBin/registry` (`teams/{name}.yaml`) |
 | `javabin init` | Interactive wizard — scaffolds a new app repo from `javaBin/app-template`, writes `app.yaml`, `Dockerfile`, and deploy workflow, then prints next steps for adding the repo to a GitHub team |
 | `javabin status` | Shows month-to-date cost (Cost Explorer) and ECS service status. Infers project from git remote or accepts `--project` flag |
-| `javabin secret list` / `javabin secret set <name> [--stdin] [--restart]` | Run in an app repo: shows which `resources.secrets` from `app.yaml` still hold the platform's `PLACEHOLDER` (never prints values) and sets a value as an SSM SecureString under `/javabin/apps/{team}/{app}/`; `--restart` forces a new ECS deployment so tasks pick it up. Needs the `javabin-developer` SSO role |
+| `javabin secret list` / `javabin secret set <name> [--stdin]` | Run in an app repo: shows which `resources.secrets` from `app.yaml` still hold the platform's `PLACEHOLDER` (never prints values) and overwrites an existing value as an SSM SecureString under `/javabin/apps/{team}/{app}/` (never creates parameters — deploy first). The platform restarts the service automatically when a secret changes. Needs the `javabin-developer` SSO role |
 | `javabin whoami` | Shows AWS identity (STS GetCallerIdentity) and GitHub user (gh API) |
 
 ## Build and Test
@@ -48,7 +48,9 @@ go build -o javabin .
 ./javabin --help
 ```
 
-No tests yet. When adding tests, use standard `go test ./...`.
+```bash
+go test ./...
+```
 
 ## Release
 
@@ -56,7 +58,7 @@ Releases are built with GoReleaser on semver tags. Binaries go to GitHub Release
 
 ## Design Decisions
 
-- **No deploy/plan/apply commands** — those run exclusively in CI. The CLI is for registration and status only.
+- **No deploy/plan/apply commands** — those run exclusively in CI. The CLI covers registration, scaffolding, status and setting app secret values.
 - **No infrastructure management** — use `app.yaml` and let the platform handle it.
 - **GitHub API directly** (not `go-github` library) — keeps dependencies minimal for a simple REST client.
 
