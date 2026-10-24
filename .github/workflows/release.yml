@@ -1,15 +1,27 @@
 name: Release
 
+# Every push to main that contains a feat/fix/perf (or breaking) commit is
+# released: the next version is computed from Conventional Commits since the
+# last tag (scripts/next-version.sh), tagged, and published by GoReleaser to
+# GitHub Releases and the javaBin/homebrew-tap formula, so `brew upgrade
+# javabin` and `go install ...@latest` pick it up. A pushed v* tag releases
+# that tag as before.
+
 on:
   push:
-    tags:
-      - "v*"
+    branches: [main]
+    tags: ["v*"]
+  workflow_dispatch:
 
 permissions:
   contents: write
 
+concurrency:
+  group: release
+  cancel-in-progress: false
+
 jobs:
-  goreleaser:
+  release:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -20,7 +32,33 @@ jobs:
         with:
           go-version-file: go.mod
 
+      - name: Test
+        run: go vet ./... && go test ./...
+
+      - name: Decide version
+        id: version
+        env:
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          if [ "$REF_TYPE" = "tag" ]; then
+            echo "tag=$REF_NAME" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=$(sh scripts/next-version.sh)" >> "$GITHUB_OUTPUT"
+          fi
+
+      # Tag pushes made with GITHUB_TOKEN don't start workflows, so the
+      # release runs in this same job rather than on the new tag.
+      - name: Tag release
+        if: steps.version.outputs.tag != '' && github.ref_type != 'tag'
+        env:
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          git tag "$TAG"
+          git push origin "$TAG"
+
       - uses: actions/create-github-app-token@v1
+        if: steps.version.outputs.tag != ''
         id: app-token
         with:
           app-id: ${{ secrets.RELEASER_APP_ID }}
@@ -29,9 +67,14 @@ jobs:
           repositories: homebrew-tap
 
       - uses: goreleaser/goreleaser-action@v6
+        if: steps.version.outputs.tag != ''
         with:
-          version: latest
+          version: "~> v2"
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           HOMEBREW_TAP_TOKEN: ${{ steps.app-token.outputs.token }}
+
+      - name: Nothing to release
+        if: steps.version.outputs.tag == ''
+        run: echo "No feat/fix/perf commits since the last tag — no release."
