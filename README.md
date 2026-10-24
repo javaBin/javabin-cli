@@ -27,7 +27,7 @@ javabin register-team
 
 ### `javabin init`
 
-Interactive wizard to scaffold a new app repo from the Javabin app template. Creates the repo under `javaBin/`, writes `app.yaml`, `Dockerfile`, and a deploy workflow, then prints next steps for adding the repo to your GitHub team.
+Interactive wizard to scaffold a new app repo from the Javabin app template. Creates the repo under `javaBin/`, writes `app.yaml`, `Dockerfile`, and a deploy workflow, then prints next steps: adding the repo to your GitHub team, `javabin aws setup` for AWS access, and `javabin secret set` for secrets after the first deploy.
 
 ```bash
 javabin init

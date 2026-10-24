@@ -48,14 +48,17 @@ CMD ["java", "-jar", "/app/app.jar"]
 		defaultPort: "8080",
 		dockerfile: `FROM eclipse-temurin:21-jdk-alpine AS build
 WORKDIR /app
-COPY pom.xml .
-COPY src ./src
-RUN apk add --no-cache maven && mvn package -DskipTests
+COPY . .
+# installDist names the distribution after the Gradle project; normalise it
+# to /out with a stable bin/start entrypoint.
+RUN ./gradlew --no-daemon installDist -x test \
+    && mkdir /out && cp -r build/install/*/. /out/ \
+    && ln -s "$(ls /out/bin | grep -v '\.bat$' | head -1)" /out/bin/start
 
 FROM eclipse-temurin:21-jre-alpine
-COPY --from=build /app/target/*.jar /app/app.jar
+COPY --from=build /out /opt/app
 EXPOSE 8080
-CMD ["java", "-jar", "/app/app.jar"]
+CMD ["/opt/app/bin/start"]
 `,
 	},
 	"typescript": {
@@ -167,6 +170,13 @@ func runInit(cmd *cobra.Command, args []string) error {
 	// Port
 	port := prompt("Port", rc.defaultPort)
 
+	// Routing — required for a web service to get a URL and ALB rule
+	host := prompt("Hostname", name+".javazone.no")
+	priority := prompt("ALB rule priority (unique across apps, 1-50000)", "")
+	if !regexp.MustCompile(`^[1-9][0-9]{0,4}$`).MatchString(priority) {
+		return fmt.Errorf("priority must be a number between 1 and 50000")
+	}
+
 	// Visibility
 	visibility := prompt("Public repo? (y/n)", "n")
 	private := strings.ToLower(visibility) != "y"
@@ -177,6 +187,7 @@ func runInit(cmd *cobra.Command, args []string) error {
 	fmt.Printf("  Team:    %s\n", team)
 	fmt.Printf("  Runtime: %s\n", runtime)
 	fmt.Printf("  Port:    %s\n", port)
+	fmt.Printf("  Host:    %s (priority %s)\n", host, priority)
 	if private {
 		fmt.Println("  Repo:    private")
 	} else {
@@ -213,8 +224,7 @@ func runInit(cmd *cobra.Command, args []string) error {
 	repoDir := filepath.Join(".", name)
 
 	// Write app.yaml
-	appYaml := fmt.Sprintf("name: %s\nteam: %s\ncompute:\n  port: %s\n", name, team, port)
-	if err := os.WriteFile(filepath.Join(repoDir, "app.yaml"), []byte(appYaml), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(repoDir, "app.yaml"), []byte(renderAppYaml(name, team, port, host, priority)), 0644); err != nil {
 		return fmt.Errorf("write app.yaml: %w", err)
 	}
 	fmt.Println("  wrote app.yaml")
@@ -230,21 +240,6 @@ func runInit(cmd *cobra.Command, args []string) error {
 	if err := os.MkdirAll(workflowDir, 0755); err != nil {
 		return fmt.Errorf("create workflow dir: %w", err)
 	}
-	deployYaml := `name: Deploy
-on:
-  push:
-    branches: [main]
-  pull_request:
-
-jobs:
-  javabin:
-    uses: javaBin/platform/.github/workflows/javabin.yml@main
-    permissions:
-      id-token: write
-      contents: read
-      pull-requests: write
-    secrets: inherit
-`
 	if err := os.WriteFile(filepath.Join(workflowDir, "deploy.yml"), []byte(deployYaml), 0644); err != nil {
 		return fmt.Errorf("write deploy.yml: %w", err)
 	}
@@ -269,11 +264,50 @@ jobs:
 
 	fmt.Printf("\nRepo ready: https://github.com/javaBin/%s\n", name)
 	fmt.Println("\nNext steps:")
-	fmt.Println("  1. Add this repo to your GitHub team:")
-	fmt.Printf("     gh api orgs/javaBin/teams/%s/repos -f owner=javaBin -f repo=%s -f permission=push\n", team, name)
+	fmt.Println("  1. Add this repo to your GitHub team (the platform deploys as the app.yaml team):")
+	fmt.Printf("     gh api -X PUT orgs/javaBin/teams/%s/repos/javaBin/%s -f permission=push\n", team, name)
 	fmt.Println("  2. Push to main — the platform CI takes over")
+	fmt.Println("  3. For AWS access (logs, status, cost), set up your team's SSO profile:")
+	fmt.Println("     javabin aws setup")
+	fmt.Println("  4. Secrets: list them under resources.secrets in app.yaml, deploy, then set each value:")
+	fmt.Println("     javabin secret set <name>   (from the repo dir)")
 
 	return nil
+}
+
+// deployYaml is the app's CI entrypoint. The permissions are required:
+// id-token for AWS OIDC, contents: write so the platform's expand step can
+// commit generated Terraform, pull-requests for plan comments.
+const deployYaml = `name: Deploy
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: write
+  pull-requests: write
+
+jobs:
+  javabin:
+    uses: javaBin/platform/.github/workflows/javabin.yml@main
+`
+
+// renderAppYaml writes the minimal app.yaml for a routed web service.
+func renderAppYaml(name, team, port, host, priority string) string {
+	return fmt.Sprintf(`name: %s
+team: %s
+
+compute:
+  port: %s
+  health_check: /health
+
+routing:
+  host: %s
+  priority: %s
+`, name, team, port, host, priority)
 }
 
 func listTeams(token string) ([]string, error) {
