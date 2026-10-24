@@ -42,12 +42,22 @@ type Result struct {
 	SessionChanged bool     // session block added or updated
 	Added          []string // profiles added
 	Unchanged      []string // profiles already as wanted
-	Conflicts      []string // profiles that exist with different settings (left alone)
+	Conflicts      []string // roles whose ProfileName exists with different settings (left alone)
 	// Covered maps a role to an existing profile (not named by ProfileName)
-	// that already uses it; no second profile is added so `javabin secret`
-	// keeps finding exactly one profile per team role.
+	// on sso_session javabin that already uses it; no second profile is added
+	// so `javabin secret` keeps finding exactly one profile per team role.
 	Covered map[string]string
+	// OtherSession maps a role to existing profiles that use it through a
+	// different sso_session (or a legacy inline sso_start_url). They are left
+	// alone, but `aws sso login --sso-session javabin` does not refresh them.
+	OtherSession map[string][]ProfileRef
+	// Ambiguous maps a role to every profile using it when, after the
+	// change, there is more than one: team-profile auto-discovery is off.
+	Ambiguous map[string][]string
 }
+
+// ProfileRef names a profile and the sso_session it uses ("" = none).
+type ProfileRef struct{ Profile, Session string }
 
 // Changed reports whether the file content differs.
 func (r *Result) Changed() bool { return r.SessionChanged || len(r.Added) > 0 }
@@ -61,7 +71,7 @@ func EnsureSession(f *File, force bool) (bool, error) {
 		f.AddSection(SessionSection, want)
 		return true, nil
 	}
-	if u := vals["sso_start_url"]; u != "" && strings.TrimRight(u, "/#") != StartURL && !force {
+	if u := vals["sso_start_url"]; u != "" && !SameStartURL(u) && !force {
 		return false, &ErrSessionConflict{Existing: u}
 	}
 	changed := false
@@ -72,6 +82,10 @@ func EnsureSession(f *File, force bool) (bool, error) {
 	}
 	return changed, nil
 }
+
+// SameStartURL reports whether u is javaBin's start URL, ignoring a trailing
+// "/" or "#".
+func SameStartURL(u string) bool { return strings.TrimRight(u, "/#") == StartURL }
 
 // ProfileSettings is what a role's profile should contain.
 func ProfileSettings(role string) []KV {
@@ -95,11 +109,24 @@ func EnsureProfiles(f *File, roles []string, r *Result) {
 		want := ProfileSettings(role)
 		vals := f.Values(section)
 		if vals == nil {
-			if other := profileForRole(f, role); other != "" {
+			covered := ""
+			for _, ref := range profilesForRole(f, role) {
+				if ref.Session == SessionName {
+					if covered == "" {
+						covered = ref.Profile
+					}
+					continue
+				}
+				if r.OtherSession == nil {
+					r.OtherSession = map[string][]ProfileRef{}
+				}
+				r.OtherSession[role] = append(r.OtherSession[role], ref)
+			}
+			if covered != "" {
 				if r.Covered == nil {
 					r.Covered = map[string]string{}
 				}
-				r.Covered[role] = other
+				r.Covered[role] = covered
 				continue
 			}
 			f.AddSection(section, want)
@@ -115,13 +142,25 @@ func EnsureProfiles(f *File, roles []string, r *Result) {
 		if same {
 			r.Unchanged = append(r.Unchanged, name)
 		} else {
-			r.Conflicts = append(r.Conflicts, name)
+			r.Conflicts = append(r.Conflicts, role)
+		}
+	}
+	for _, role := range roles {
+		if refs := profilesForRole(f, role); len(refs) > 1 {
+			if r.Ambiguous == nil {
+				r.Ambiguous = map[string][]string{}
+			}
+			for _, ref := range refs {
+				r.Ambiguous[role] = append(r.Ambiguous[role], ref.Profile)
+			}
 		}
 	}
 }
 
-// profileForRole finds an existing profile using role in the javaBin account.
-func profileForRole(f *File, role string) string {
+// profilesForRole lists existing profiles using role in the javaBin account
+// (the same rule FindTeamProfile uses for auto-discovery).
+func profilesForRole(f *File, role string) []ProfileRef {
+	var refs []ProfileRef
 	for _, name := range f.SectionNames() {
 		p, ok := strings.CutPrefix(name, "profile ")
 		if !ok && name != "default" {
@@ -132,10 +171,10 @@ func profileForRole(f *File, role string) string {
 		}
 		v := f.Values(name)
 		if v["sso_role_name"] == role && (v["sso_account_id"] == "" || v["sso_account_id"] == AccountID) {
-			return p
+			refs = append(refs, ProfileRef{Profile: p, Session: v["sso_session"]})
 		}
 	}
-	return ""
+	return refs
 }
 
 // Apply runs EnsureSession and EnsureProfiles on data and returns the new

@@ -29,6 +29,7 @@ var (
 type awsDeps struct {
 	configPath string
 	cacheDir   string
+	lookAws    func() error // checks the AWS CLI is installed
 	login      func() error
 	roles      awsconfig.RoleLister
 	now        func() time.Time
@@ -39,6 +40,7 @@ func defaultAwsDeps() awsDeps {
 	return awsDeps{
 		configPath: awsconfig.DefaultPath(),
 		cacheDir:   awsconfig.DefaultCacheDir(),
+		lookAws:    func() error { _, err := findAws(); return err },
 		login:      ssoLogin,
 		roles:      awsconfig.SSORoleLister{Region: awsconfig.SSORegion},
 		now:        time.Now,
@@ -80,6 +82,13 @@ func runAwsSetup(ctx context.Context, d awsDeps, force, noLogin, dryRun bool) er
 		return err
 	}
 
+	needLogin := !noLogin && !dryRun
+	if needLogin { // fail before touching the config
+		if err := d.lookAws(); err != nil {
+			return err
+		}
+	}
+
 	// 1. The sso-session block must be on disk before aws sso login can use it.
 	withSession, r, err := awsconfig.Apply(orig, nil, force)
 	if err != nil {
@@ -103,7 +112,7 @@ func runAwsSetup(ctx context.Context, d awsDeps, force, noLogin, dryRun bool) er
 	}
 
 	// 2. Sign in (writes only the AWS CLI's token cache).
-	if !noLogin && !dryRun {
+	if needLogin {
 		if err := d.login(); err != nil {
 			return err
 		}
@@ -189,10 +198,30 @@ func printSetupSummary(w io.Writer, roles []string, r *awsconfig.Result, dryRun 
 	if len(r.Unchanged) > 0 {
 		fmt.Fprintf(w, "Already up to date: %s\n", strings.Join(r.Unchanged, ", "))
 	}
-	for _, p := range r.Conflicts {
-		fmt.Fprintf(w, "Left alone: [profile %s] exists with different settings — fix or remove it yourself if it should point at role %s\n", p, p)
+	for _, role := range r.Conflicts {
+		fmt.Fprintf(w, "Left alone: [profile %s] exists with different settings — fix or remove it yourself if it should point at role %s\n", awsconfig.ProfileName(role), role)
 	}
 	sort.Strings(roles)
+	for _, role := range roles {
+		for _, ref := range r.OtherSession[role] {
+			how := "sso_session = " + ref.Session
+			if ref.Session == "" {
+				how = "no sso_session (legacy sso_start_url)"
+			}
+			fmt.Fprintf(w, "Warning: existing [profile %s] also uses role %s but with %s; `aws sso login --sso-session %s` does not refresh it — consider removing it\n",
+				ref.Profile, role, how, awsconfig.SessionName)
+		}
+		if refs, ok := r.Ambiguous[role]; ok {
+			use := awsconfig.ProfileName(role)
+			if c, ok := r.Covered[role]; ok {
+				use = c
+			}
+			if team, isTeam := strings.CutPrefix(role, "javabin-team-"); isTeam {
+				fmt.Fprintf(w, "Warning: %d profiles use role %s (%s), so `javabin secret` cannot pick one for team %s — pass --profile %s (or set AWS_PROFILE), or remove the others\n",
+					len(refs), role, strings.Join(refs, ", "), team, use)
+			}
+		}
+	}
 	var teams []string
 	for _, role := range roles {
 		profile := awsconfig.ProfileName(role)
@@ -209,17 +238,27 @@ func printSetupSummary(w io.Writer, roles []string, r *awsconfig.Result, dryRun 
 		for _, t := range teams {
 			fmt.Fprintln(w, t)
 		}
-		fmt.Fprintln(w, "\n`javabin secret ...` picks the team profile from app.yaml automatically.")
+		if len(r.Ambiguous) == 0 {
+			fmt.Fprintln(w, "\n`javabin secret ...` picks the team profile from app.yaml automatically.")
+		}
 	}
 	fmt.Fprintf(w, "Sessions last about 8 hours; renew with: aws sso login --sso-session %s\n", awsconfig.SessionName)
 }
 
-func ssoLogin() error {
+func findAws() (string, error) {
 	bin, err := exec.LookPath("aws")
 	if err != nil {
-		return errors.New("the AWS CLI (v2) is not installed. Install it, then rerun javabin aws setup:\n" +
+		return "", errors.New("the AWS CLI (v2) is not installed. Install it, then rerun javabin aws setup:\n" +
 			"  macOS:  brew install awscli\n" +
 			"  other:  https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html")
+	}
+	return bin, nil
+}
+
+func ssoLogin() error {
+	bin, err := findAws()
+	if err != nil {
+		return err
 	}
 	c := exec.Command(bin, "sso", "login", "--sso-session", awsconfig.SessionName)
 	c.Stdin, c.Stdout, c.Stderr = os.Stdin, os.Stdout, os.Stderr
@@ -253,7 +292,7 @@ func runAwsDoctor(d awsDeps, appYaml string) error {
 	}
 	f := awsconfig.Parse(data)
 	sess := f.Values(awsconfig.SessionSection)
-	report(sess != nil && sess["sso_start_url"] == awsconfig.StartURL, "%s has [%s] for %s", d.configPath, awsconfig.SessionSection, awsconfig.StartURL)
+	report(sess != nil && awsconfig.SameStartURL(sess["sso_start_url"]), "%s has [%s] for %s", d.configPath, awsconfig.SessionSection, awsconfig.StartURL)
 	if tok, err := awsconfig.ReadToken(d.cacheDir, awsconfig.SessionName, d.now()); err != nil {
 		report(false, "SSO token: %v (run: aws sso login --sso-session %s)", err, awsconfig.SessionName)
 	} else {

@@ -129,7 +129,7 @@ func TestApplyProfileConflictLeftAlone(t *testing.T) {
 }
 
 func TestApplyRoleAlreadyCoveredByOtherProfile(t *testing.T) {
-	orig := "[profile cupcake]\nsso_account_id = 553637109631\nsso_role_name = javabin-team-cupcake\n"
+	orig := "[profile cupcake]\nsso_session = javabin\nsso_account_id = 553637109631\nsso_role_name = javabin-team-cupcake\n"
 	got, r, _ := Apply(orig, roles, false)
 	if r.Covered["javabin-team-cupcake"] != "cupcake" || strings.Contains(got, "[profile javabin-team-cupcake]") {
 		t.Errorf("should not add a second profile for the role: %+v\n%s", r, got)
@@ -203,4 +203,86 @@ func TestRoleListerInterface(t *testing.T) {
 		t.Error(got)
 	}
 	var _ RoleLister = SSORoleLister{}
+}
+
+func TestApplyOtherSessionNotCovered(t *testing.T) {
+	orig := "[profile cupcake]\nsso_session = jb\nsso_account_id = 553637109631\nsso_role_name = javabin-team-cupcake\n"
+	got, r, _ := Apply(orig, roles, false)
+	if !strings.Contains(got, "[profile javabin-team-cupcake]") || r.Covered["javabin-team-cupcake"] != "" {
+		t.Errorf("profile on another session must not count as covered: %+v\n%s", r, got)
+	}
+	if refs := r.OtherSession["javabin-team-cupcake"]; len(refs) != 1 || refs[0] != (ProfileRef{"cupcake", "jb"}) {
+		t.Errorf("OtherSession %v", r.OtherSession)
+	}
+	if amb := r.Ambiguous["javabin-team-cupcake"]; len(amb) != 2 {
+		t.Errorf("Ambiguous %v", r.Ambiguous)
+	}
+	if !strings.HasPrefix(got, orig) {
+		t.Error("existing profile changed")
+	}
+}
+
+func TestApplyAmbiguousExistingProfiles(t *testing.T) {
+	orig := "[profile a]\nsso_session = javabin\nsso_role_name = javabin-team-cupcake\n[profile b]\nsso_session = javabin\nsso_role_name = javabin-team-cupcake\n"
+	_, r, _ := Apply(orig, []string{"javabin-team-cupcake"}, false)
+	if r.Covered["javabin-team-cupcake"] != "a" || len(r.Ambiguous["javabin-team-cupcake"]) != 2 || len(r.Added) != 0 {
+		t.Errorf("%+v", r)
+	}
+}
+
+func TestSetSkipsNestedBlock(t *testing.T) {
+	f := Parse("[sso-session javabin]\nsso_start_url = " + StartURL + "\ns3 =\n  max_concurrent_requests = 20\n\n[profile x]\n")
+	f.Set(SessionSection, "sso_region", "eu-central-1")
+	want := "[sso-session javabin]\nsso_start_url = " + StartURL + "\ns3 =\n  max_concurrent_requests = 20\nsso_region = eu-central-1\n\n[profile x]\n"
+	if got := f.String(); got != want {
+		t.Errorf("got:\n%s", got)
+	}
+}
+
+func TestParseHeaderWithComment(t *testing.T) {
+	f := Parse("[profile a] # note\nregion = x\n[profile  b] ; other\nregion = y\n[not a header] junk\n")
+	if f.Values("profile a")["region"] != "x" || f.Values("profile b")["region"] != "y" {
+		t.Errorf("sections %v", f.SectionNames())
+	}
+	if f.Has("not a header") {
+		t.Error("trailing junk must not make a header")
+	}
+}
+
+func TestWriteFileFollowsSymlink(t *testing.T) {
+	dir := t.TempDir()
+	realDir := filepath.Join(dir, "dotfiles")
+	_ = os.MkdirAll(realDir, 0o700)
+	target := filepath.Join(realDir, "aws-config")
+	_ = os.WriteFile(target, []byte("old\n"), 0o600)
+	link := filepath.Join(dir, "config")
+	if err := os.Symlink("dotfiles/aws-config", link); err != nil {
+		t.Fatal(err)
+	}
+	bak, err := WriteFile(link, "new\n", true, time.Date(2026, 10, 24, 12, 0, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fi, _ := os.Lstat(link); fi.Mode()&os.ModeSymlink == 0 {
+		t.Error("symlink was replaced by a regular file")
+	}
+	if got, _ := os.ReadFile(target); string(got) != "new\n" {
+		t.Errorf("target = %q", got)
+	}
+	realTargetDir, _ := filepath.EvalSymlinks(realDir)
+	if old, _ := os.ReadFile(bak); string(old) != "old\n" || filepath.Dir(bak) != realTargetDir {
+		t.Errorf("backup %s = %q", bak, old)
+	}
+	if tmps, _ := filepath.Glob(filepath.Join(dir, ".config-*")); len(tmps) != 0 {
+		t.Errorf("temp files left: %v", tmps)
+	}
+	// dangling link: target gets created, link kept
+	dangling := filepath.Join(dir, "config2")
+	_ = os.Symlink(filepath.Join(realDir, "new-config"), dangling)
+	if _, err := WriteFile(dangling, "x\n", true, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := os.ReadFile(filepath.Join(realDir, "new-config")); string(got) != "x\n" {
+		t.Errorf("dangling target = %q", got)
+	}
 }

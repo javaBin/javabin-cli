@@ -45,15 +45,30 @@ func Parse(data string) *File {
 		return f
 	}
 	for _, line := range strings.Split(strings.TrimSuffix(data, "\n"), "\n") {
-		t := strings.TrimSpace(line)
-		if strings.HasPrefix(t, "[") && strings.HasSuffix(t, "]") {
-			cur = &section{name: strings.Join(strings.Fields(t[1:len(t)-1]), " "), lines: []string{line}}
+		if name, ok := parseHeader(line); ok {
+			cur = &section{name: name, lines: []string{line}}
 			f.sections = append(f.sections, cur)
 			continue
 		}
 		cur.lines = append(cur.lines, line)
 	}
 	return f
+}
+
+// parseHeader recognises "[name]", optionally followed by a # or ; comment.
+func parseHeader(line string) (string, bool) {
+	t := strings.TrimSpace(line)
+	if !strings.HasPrefix(t, "[") {
+		return "", false
+	}
+	end := strings.Index(t, "]")
+	if end < 0 {
+		return "", false
+	}
+	if rest := strings.TrimSpace(t[end+1:]); rest != "" && rest[0] != '#' && rest[0] != ';' {
+		return "", false
+	}
+	return strings.Join(strings.Fields(t[1:end]), " "), true
 }
 
 // String renders the file.
@@ -134,13 +149,19 @@ func (f *File) Set(name, key, value string) bool {
 	if s == nil {
 		return false
 	}
-	last := 0
+	last, inKV := 0, false
 	for i, line := range s.lines[1:] {
 		k, v, ok := parseKV(line)
 		if !ok {
+			// keep a new key out of a nested block such as "s3 =\n  max_... = 20"
+			if inKV && strings.TrimSpace(line) != "" && (line[0] == ' ' || line[0] == '\t') {
+				last = i + 1
+			} else if strings.TrimSpace(line) == "" {
+				inKV = false
+			}
 			continue
 		}
-		last = i + 1
+		last, inKV = i+1, true
 		if k == key {
 			if v == value {
 				return false
@@ -167,10 +188,16 @@ func (f *File) AddSection(name string, kvs []KV) {
 	f.trailNL = true
 }
 
-// WriteFile writes data atomically (temp file + rename) with mode 0600. With
-// backup it first copies an existing file to <path>.bak-<timestamp> and
-// returns that path ("" when there was nothing to back up).
+// WriteFile writes data atomically (temp file + rename) with mode 0600. A
+// symlinked path is resolved first so the link survives and its target is
+// what gets replaced. With backup it first copies the existing target to
+// <target>.bak-<timestamp> and returns that path ("" when there was nothing
+// to back up).
 func WriteFile(path, data string, backup bool, now time.Time) (string, error) {
+	path, err := resolveLink(path)
+	if err != nil {
+		return "", err
+	}
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return "", err
@@ -204,4 +231,33 @@ func WriteFile(path, data string, backup bool, now time.Time) (string, error) {
 		return "", err
 	}
 	return bak, nil
+}
+
+// resolveLink follows symlinks (including a dangling final link, whose
+// target is created) and returns the real file path.
+func resolveLink(path string) (string, error) {
+	if real, err := filepath.EvalSymlinks(path); err == nil {
+		return real, nil
+	}
+	for i := 0; i < 40; i++ {
+		fi, err := os.Lstat(path)
+		if os.IsNotExist(err) {
+			return path, nil
+		}
+		if err != nil {
+			return "", err
+		}
+		if fi.Mode()&os.ModeSymlink == 0 {
+			return path, nil
+		}
+		target, err := os.Readlink(path)
+		if err != nil {
+			return "", err
+		}
+		if !filepath.IsAbs(target) {
+			target = filepath.Join(filepath.Dir(path), target)
+		}
+		path = target
+	}
+	return "", fmt.Errorf("%s: too many levels of symbolic links", path)
 }
