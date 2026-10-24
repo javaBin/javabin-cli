@@ -51,10 +51,9 @@ func credentialsHelp(err error, profile, team string) error {
 	if profile != "" {
 		return fmt.Errorf("no valid AWS credentials for profile %q — run: aws sso login --profile %s\n(%w)", profile, profile, err)
 	}
-	return errors.New("no AWS credentials found. Sign in with your team's SSO role (" + role + "):\n" +
-		"  aws configure sso          # once: account " + AccountID + ", role " + role + "\n" +
-		"  aws sso login --profile <name>\n" +
-		"then pass --profile <name> or set AWS_PROFILE=<name>")
+	return errors.New("no AWS credentials found. Set up javaBin SSO profiles (once) and sign in:\n" +
+		"  javabin aws setup          # writes ~/.aws/config profiles for your roles, e.g. " + role + "\n" +
+		"then rerun; the team profile is picked automatically (or pass --profile " + role + ")")
 }
 
 func awsConfigPath() string {

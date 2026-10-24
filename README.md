@@ -42,6 +42,19 @@ javabin status              # infers project from git remote
 javabin status --project moresleep
 ```
 
+### `javabin aws setup`
+
+One-time AWS setup — no hand-editing of `~/.aws/config`. Requires the [AWS CLI v2](https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html) (`brew install awscli`).
+
+```bash
+javabin aws setup             # add SSO session, sign in, write a profile per role you have
+javabin aws setup --dry-run   # show what would change
+javabin aws setup --no-login  # reuse a valid SSO session
+javabin aws doctor            # check config, token and the profile `secret` would use
+```
+
+It adds an `[sso-session javabin]` block for javaBin's IAM Identity Center, runs `aws sso login --sso-session javabin`, then writes one profile per role you are assigned in account `553637109631`. Profiles are named after the role: `javabin-team-<team>`, `javabin-developer`, `javabin-admin`, `javabin-readonly`. Existing profiles are never changed; the config is backed up to `config.bak-<timestamp>` first. `javabin secret ...` picks your team's profile automatically; elsewhere use `--profile javabin-team-<team>` or `AWS_PROFILE`. Sessions expire after ~8h: `aws sso login --sso-session javabin`.
+
 ### `javabin whoami`
 
 Show current identity (AWS + GitHub).
@@ -53,7 +66,7 @@ javabin whoami
 ## Authentication
 
 - **GitHub:** Uses `gh auth token` if available, or `GITHUB_TOKEN`/`GH_TOKEN` environment variables
-- **AWS:** Standard credential chain (environment variables, `~/.aws/credentials`, SSO)
+- **AWS:** Standard credential chain (environment variables, `~/.aws/credentials`, SSO). Run `javabin aws setup` once to get SSO profiles.
 
 ## What This CLI Does NOT Do
 
