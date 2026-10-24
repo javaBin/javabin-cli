@@ -43,6 +43,13 @@ jobs:
         run: |
           if [ "$REF_TYPE" = "tag" ]; then
             echo "tag=$REF_NAME" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # A re-run after a failed publish: HEAD is already tagged
+          EXISTING=$(git tag --points-at HEAD 'v*' | head -1)
+          if [ -n "$EXISTING" ]; then
+            echo "tag=$EXISTING" >> "$GITHUB_OUTPUT"
+            echo "existing=true" >> "$GITHUB_OUTPUT"
           else
             echo "tag=$(sh scripts/next-version.sh)" >> "$GITHUB_OUTPUT"
           fi
@@ -50,7 +57,7 @@ jobs:
       # Tag pushes made with GITHUB_TOKEN don't start workflows, so the
       # release runs in this same job rather than on the new tag.
       - name: Tag release
-        if: steps.version.outputs.tag != '' && github.ref_type != 'tag'
+        if: steps.version.outputs.tag != '' && steps.version.outputs.existing != 'true' && github.ref == 'refs/heads/main'
         env:
           TAG: ${{ steps.version.outputs.tag }}
         run: |
@@ -58,7 +65,7 @@ jobs:
           git push origin "$TAG"
 
       - uses: actions/create-github-app-token@v1
-        if: steps.version.outputs.tag != ''
+        if: steps.version.outputs.tag != '' && (github.ref == 'refs/heads/main' || github.ref_type == 'tag')
         id: app-token
         with:
           app-id: ${{ secrets.RELEASER_APP_ID }}
@@ -67,7 +74,7 @@ jobs:
           repositories: homebrew-tap
 
       - uses: goreleaser/goreleaser-action@v6
-        if: steps.version.outputs.tag != ''
+        if: steps.version.outputs.tag != '' && (github.ref == 'refs/heads/main' || github.ref_type == 'tag')
         with:
           version: "~> v2"
           args: release --clean

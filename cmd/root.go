@@ -2,6 +2,8 @@ package cmd
 
 import (
 	"fmt"
+	"runtime/debug"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -22,6 +24,12 @@ var rootCmd = &cobra.Command{
 }
 
 func Execute() error {
+	// go install builds carry no ldflags; use the module version they were built from
+	if version == "dev" {
+		if bi, ok := debug.ReadBuildInfo(); ok && bi.Main.Version != "" && bi.Main.Version != "(devel)" {
+			version = strings.TrimPrefix(bi.Main.Version, "v")
+		}
+	}
 	rootCmd.Version = version
 	rootCmd.SetVersionTemplate(fmt.Sprintf("javabin {{.Version}} (%s)\n", commit))
 	err := rootCmd.Execute()

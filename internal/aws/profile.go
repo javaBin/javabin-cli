@@ -38,6 +38,9 @@ func LoadConfigForTeam(ctx context.Context, team string) (aws.Config, error) {
 		return cfg, err
 	}
 	if _, err := cfg.Credentials.Retrieve(ctx); err != nil {
+		if profile == "" {
+			profile = os.Getenv("AWS_PROFILE")
+		}
 		return cfg, credentialsHelp(err, profile, team)
 	}
 	return cfg, nil
@@ -96,6 +99,9 @@ func FindTeamProfile(path, team string) string {
 			continue
 		}
 		if k, v, ok := strings.Cut(line, "="); ok {
+			if i := strings.IndexAny(v, "#;"); i >= 0 {
+				v = v[:i] // inline comment
+			}
 			vals[strings.TrimSpace(k)] = strings.TrimSpace(v)
 		}
 	}

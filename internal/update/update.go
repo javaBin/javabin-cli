@@ -17,6 +17,8 @@ import (
 	"strings"
 	"time"
 
+	"golang.org/x/term"
+
 	"github.com/javaBin/javabin-cli/internal/config"
 )
 
@@ -40,10 +42,13 @@ func Notice(current string, fetch func() (string, error), cachePath string, now 
 	}
 	c := readCache(cachePath)
 	if now.Sub(c.CheckedAt) > checkEvery {
+		// Record the attempt even when it fails, so offline users don't
+		// wait for the timeout on every command; keep the last known latest.
 		if latest, err := fetch(); err == nil && latest != "" {
-			c = cache{CheckedAt: now, Latest: latest}
-			writeCache(cachePath, c)
+			c.Latest = latest
 		}
+		c.CheckedAt = now
+		writeCache(cachePath, c)
 	}
 	if c.Latest == "" || !Newer(c.Latest, current) {
 		return ""
@@ -126,6 +131,5 @@ func writeCache(path string, c cache) {
 }
 
 func isTerminal(f *os.File) bool {
-	fi, err := f.Stat()
-	return err == nil && fi.Mode()&os.ModeCharDevice != 0
+	return term.IsTerminal(int(f.Fd()))
 }

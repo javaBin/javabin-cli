@@ -25,5 +25,8 @@ check v0.2.0 v0.3.0 "fix: x" "BREAKING CHANGE: flag removed"
 check v1.4.2 v2.0.0 "refactor(api)!: new shape"
 check v1.4.2 v1.5.0 "feat: y"
 check -      v0.1.0 "feat: first"
+check v0.2.0 v0.3.0 "feat(secret)!: rename flag"
+check v0.2.0 -      'Revert "feat: x"'
+
 [ "$FAIL" = 0 ] && echo "next-version: all cases pass"
 exit "$FAIL"

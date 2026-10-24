@@ -60,3 +60,15 @@ func TestNoticeQuietWhenCurrentDevOrFailing(t *testing.T) {
 		t.Errorf("fetch failed but got %q", msg)
 	}
 }
+
+func TestFailedCheckIsNotRetriedOnEveryCommand(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "c.json")
+	calls := 0
+	fetch := func() (string, error) { calls++; return "", errors.New("offline") }
+	now := time.Now()
+	Notice("0.2.0", fetch, path, now)
+	Notice("0.2.0", fetch, path, now.Add(time.Minute))
+	if calls != 1 {
+		t.Errorf("fetched %d times while offline within a day, want 1", calls)
+	}
+}

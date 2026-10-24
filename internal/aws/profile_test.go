@@ -17,7 +17,7 @@ sso_role_name = javabin-admin
 [profile cupcake]
 sso_session = javabin
 sso_account_id = 553637109631
-sso_role_name = javabin-team-cupcake
+sso_role_name = javabin-team-cupcake  # team role
 
 [profile other-account]
 sso_account_id = 111111111111
