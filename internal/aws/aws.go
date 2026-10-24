@@ -24,7 +24,11 @@ const (
 )
 
 func LoadConfig(ctx context.Context) (aws.Config, error) {
-	return awsconfig.LoadDefaultConfig(ctx, awsconfig.WithRegion(defaultRegion))
+	opts := []func(*awsconfig.LoadOptions) error{awsconfig.WithRegion(defaultRegion)}
+	if Profile != "" {
+		opts = append(opts, awsconfig.WithSharedConfigProfile(Profile))
+	}
+	return awsconfig.LoadDefaultConfig(ctx, opts...)
 }
 
 // CallerIdentity holds STS identity info.
