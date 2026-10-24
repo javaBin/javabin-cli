@@ -96,7 +96,7 @@ var secretListCmd = &cobra.Command{
 			return err
 		}
 		ctx := context.Background()
-		cfg, err := jbaws.LoadConfig(ctx)
+		cfg, err := jbaws.LoadConfigForTeam(ctx, app.Team)
 		if err != nil {
 			return err
 		}
@@ -150,7 +150,7 @@ var secretSetCmd = &cobra.Command{
 		}
 
 		ctx := context.Background()
-		cfg, err := jbaws.LoadConfig(ctx)
+		cfg, err := jbaws.LoadConfigForTeam(ctx, app.Team)
 		if err != nil {
 			return err
 		}
