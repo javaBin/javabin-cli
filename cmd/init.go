@@ -267,6 +267,10 @@ func runInit(cmd *cobra.Command, args []string) error {
 	fmt.Println("  1. Add this repo to your GitHub team (the platform deploys as the app.yaml team):")
 	fmt.Printf("     gh api -X PUT orgs/javaBin/teams/%s/repos/javaBin/%s -f permission=push\n", team, name)
 	fmt.Println("  2. Push to main — the platform CI takes over")
+	fmt.Println("  3. For AWS access (logs, status, cost), set up your team's SSO profile:")
+	fmt.Println("     javabin aws setup")
+	fmt.Println("  4. Secrets: list them under resources.secrets in app.yaml, deploy, then set each value:")
+	fmt.Println("     javabin secret set <name>   (from the repo dir)")
 
 	return nil
 }
