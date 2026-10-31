@@ -3,6 +3,7 @@ package cmd
 import (
 	"bufio"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -22,89 +23,6 @@ var initCmd = &cobra.Command{
 	Short: "Scaffold a new app repo from the Javabin app template",
 	Long:  "Interactive wizard that creates a new repo under javaBin/ from the app-template and customizes it for your runtime.",
 	RunE:  runInit,
-}
-
-type runtimeConfig struct {
-	defaultPort string
-	dockerfile  string
-}
-
-var runtimes = map[string]runtimeConfig{
-	"java": {
-		defaultPort: "8080",
-		dockerfile: `FROM eclipse-temurin:21-jdk-alpine AS build
-WORKDIR /app
-COPY pom.xml .
-COPY src ./src
-RUN apk add --no-cache maven && mvn package -DskipTests
-
-FROM eclipse-temurin:21-jre-alpine
-COPY --from=build /app/target/*.jar /app/app.jar
-EXPOSE 8080
-CMD ["java", "-jar", "/app/app.jar"]
-`,
-	},
-	"kotlin": {
-		defaultPort: "8080",
-		dockerfile: `FROM eclipse-temurin:21-jdk-alpine AS build
-WORKDIR /app
-COPY . .
-# installDist names the distribution after the Gradle project; normalise it
-# to /out with a stable bin/start entrypoint.
-RUN ./gradlew --no-daemon installDist -x test \
-    && mkdir /out && cp -r build/install/*/. /out/ \
-    && ln -s "$(ls /out/bin | grep -v '\.bat$' | head -1)" /out/bin/start
-
-FROM eclipse-temurin:21-jre-alpine
-COPY --from=build /out /opt/app
-EXPOSE 8080
-CMD ["/opt/app/bin/start"]
-`,
-	},
-	"typescript": {
-		defaultPort: "3000",
-		dockerfile: `FROM node:22-alpine AS build
-WORKDIR /app
-COPY package.json pnpm-lock.yaml ./
-RUN corepack enable && pnpm install --frozen-lockfile
-COPY . .
-RUN pnpm build
-
-FROM node:22-alpine
-WORKDIR /app
-COPY --from=build /app/dist ./dist
-COPY --from=build /app/node_modules ./node_modules
-COPY --from=build /app/package.json .
-EXPOSE 3000
-CMD ["node", "dist/index.js"]
-`,
-	},
-	"python": {
-		defaultPort: "8000",
-		dockerfile: `FROM python:3.12-slim
-WORKDIR /app
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
-COPY . .
-EXPOSE 8000
-CMD ["python", "-m", "uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
-`,
-	},
-	"go": {
-		defaultPort: "8080",
-		dockerfile: `FROM golang:1.22-alpine AS build
-WORKDIR /app
-COPY go.mod go.sum ./
-RUN go mod download
-COPY . .
-RUN CGO_ENABLED=0 go build -o /app/server .
-
-FROM alpine:3.19
-COPY --from=build /app/server /server
-EXPOSE 8080
-CMD ["/server"]
-`,
-	},
 }
 
 func runInit(cmd *cobra.Command, args []string) error {
@@ -171,11 +89,8 @@ func runInit(cmd *cobra.Command, args []string) error {
 	port := prompt("Port", rc.defaultPort)
 
 	// Routing — required for a web service to get a URL and ALB rule
+	// (routing.priority is left out: the platform derives one.)
 	host := prompt("Hostname", name+".javazone.no")
-	priority := prompt("ALB rule priority (unique across apps, 1-50000)", "")
-	if !regexp.MustCompile(`^[1-9][0-9]{0,4}$`).MatchString(priority) {
-		return fmt.Errorf("priority must be a number between 1 and 50000")
-	}
 
 	// Visibility
 	visibility := prompt("Public repo? (y/n)", "n")
@@ -187,7 +102,7 @@ func runInit(cmd *cobra.Command, args []string) error {
 	fmt.Printf("  Team:    %s\n", team)
 	fmt.Printf("  Runtime: %s\n", runtime)
 	fmt.Printf("  Port:    %s\n", port)
-	fmt.Printf("  Host:    %s (priority %s)\n", host, priority)
+	fmt.Printf("  Host:    %s\n", host)
 	if private {
 		fmt.Println("  Repo:    private")
 	} else {
@@ -223,56 +138,81 @@ func runInit(cmd *cobra.Command, args []string) error {
 
 	repoDir := filepath.Join(".", name)
 
-	// Write app.yaml
-	if err := os.WriteFile(filepath.Join(repoDir, "app.yaml"), []byte(renderAppYaml(name, team, port, host, priority)), 0644); err != nil {
-		return fmt.Errorf("write app.yaml: %w", err)
+	// Write app.yaml, the runtime scaffold and the deploy workflow
+	files := rc.render(name, port)
+	files["app.yaml"] = renderAppYaml(name, team, port, host)
+	files[".github/workflows/deploy.yml"] = deployYaml
+	written, err := writeFiles(repoDir, files)
+	if err != nil {
+		return fmt.Errorf("write scaffold: %w", err)
 	}
-	fmt.Println("  wrote app.yaml")
+	for _, f := range written {
+		fmt.Printf("  wrote %s\n", f)
+	}
 
-	// Write Dockerfile
-	if err := os.WriteFile(filepath.Join(repoDir, "Dockerfile"), []byte(rc.dockerfile), 0644); err != nil {
-		return fmt.Errorf("write Dockerfile: %w", err)
+	fmt.Print("Committing... ")
+	if err := runGit(repoDir, append([]string{"add", "--"}, written...)...); err != nil {
+		fmt.Println("failed")
+		return err
 	}
-	fmt.Println("  wrote Dockerfile")
+	if err := runGit(repoDir, "commit", "-m", fmt.Sprintf("Configure %s for Javabin platform", name)); err != nil {
+		fmt.Println("failed")
+		return err
+	}
+	fmt.Println("done")
 
-	// Write deploy workflow
-	workflowDir := filepath.Join(repoDir, ".github", "workflows")
-	if err := os.MkdirAll(workflowDir, 0755); err != nil {
-		return fmt.Errorf("create workflow dir: %w", err)
+	// The platform only deploys repos that belong to the app.yaml team, so
+	// the repo must be in the GitHub team before the first push to main
+	// triggers the pipeline.
+	fmt.Printf("Adding javaBin/%s to GitHub team %s... ", name, team)
+	if err := gh.AddRepoToTeam(token, team, name); err != nil {
+		fmt.Println("failed")
+		return teamAccessError(err, team, name)
 	}
-	if err := os.WriteFile(filepath.Join(workflowDir, "deploy.yml"), []byte(deployYaml), 0644); err != nil {
-		return fmt.Errorf("write deploy.yml: %w", err)
-	}
-	fmt.Println("  wrote .github/workflows/deploy.yml")
+	fmt.Println("done")
 
-	// Commit and push
-	fmt.Print("Committing and pushing... ")
-	gitCmds := [][]string{
-		{"add", "app.yaml", "Dockerfile", ".github/workflows/deploy.yml"},
-		{"commit", "-m", fmt.Sprintf("Configure %s for Javabin platform", name)},
-		{"push"},
-	}
-	for _, gitArgs := range gitCmds {
-		c := exec.Command("git", gitArgs...)
-		c.Dir = repoDir
-		if out, err := c.CombinedOutput(); err != nil {
-			fmt.Println("failed")
-			return fmt.Errorf("git %s: %w\n%s", gitArgs[0], err, string(out))
-		}
+	fmt.Print("Pushing to main... ")
+	if err := runGit(repoDir, "push"); err != nil {
+		fmt.Println("failed")
+		return err
 	}
 	fmt.Println("done")
 
 	fmt.Printf("\nRepo ready: https://github.com/javaBin/%s\n", name)
+	fmt.Println("The push to main started the platform pipeline (Actions tab).")
 	fmt.Println("\nNext steps:")
-	fmt.Println("  1. Add this repo to your GitHub team (the platform deploys as the app.yaml team):")
-	fmt.Printf("     gh api -X PUT orgs/javaBin/teams/%s/repos/javaBin/%s -f permission=push\n", team, name)
-	fmt.Println("  2. Push to main — the platform CI takes over")
-	fmt.Println("  3. For AWS access (logs, status, cost), set up your team's SSO profile:")
+	fmt.Println("  1. For AWS access (logs, status, cost), set up your team's SSO profile:")
 	fmt.Println("     javabin aws setup")
-	fmt.Println("  4. Secrets: list them under resources.secrets in app.yaml, deploy, then set each value:")
+	fmt.Println("  2. Secrets: list them under resources.secrets in app.yaml, deploy, then set each value:")
 	fmt.Println("     javabin secret set <name>   (from the repo dir)")
 
 	return nil
+}
+
+func runGit(dir string, args ...string) error {
+	c := exec.Command("git", args...)
+	c.Dir = dir
+	if out, err := c.CombinedOutput(); err != nil {
+		return fmt.Errorf("git %s: %w\n%s", args[0], err, string(out))
+	}
+	return nil
+}
+
+// teamAccessError explains why the repo could not be added to the team. The
+// scaffold is committed locally but not pushed, so the first pipeline run is
+// not rejected for a repo outside the team.
+func teamAccessError(err error, team, name string) error {
+	addCmd := fmt.Sprintf("gh api -X PUT orgs/javaBin/teams/%s/repos/javaBin/%s -f permission=push", team, name)
+	var why string
+	if errors.Is(err, gh.ErrNoTeamAccess) {
+		why = fmt.Sprintf("you are not allowed to add repos to team %s (only its maintainers, role: maintainer in\n"+
+			"javaBin/registry teams/%s.yaml, and org owners can), or the team does not exist yet", team, team)
+	} else {
+		why = err.Error()
+	}
+	return fmt.Errorf("could not add javaBin/%s to GitHub team %s: %s\n\n"+
+		"The scaffold is committed in ./%s but NOT pushed: the platform rejects deploys from repos outside the app.yaml team.\n"+
+		"Ask a team maintainer or org owner to run:\n  %s\nthen push:\n  cd %s && git push", name, team, why, name, addCmd, name)
 }
 
 // deployYaml is the app's CI entrypoint. The permissions are required:
@@ -296,7 +236,8 @@ jobs:
 `
 
 // renderAppYaml writes the minimal app.yaml for a routed web service.
-func renderAppYaml(name, team, port, host, priority string) string {
+// routing.priority is omitted; the platform derives a unique one.
+func renderAppYaml(name, team, port, host string) string {
 	return fmt.Sprintf(`name: %s
 team: %s
 
@@ -306,8 +247,7 @@ compute:
 
 routing:
   host: %s
-  priority: %s
-`, name, team, port, host, priority)
+`, name, team, port, host)
 }
 
 func listTeams(token string) ([]string, error) {

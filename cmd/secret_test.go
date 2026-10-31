@@ -34,9 +34,66 @@ func TestSecretPathMatchesServiceSecretModule(t *testing.T) {
 	}
 }
 
-func TestLoadAppYamlRequiresNameAndTeam(t *testing.T) {
+func TestLoadAppYamlRequiresTeam(t *testing.T) {
 	if _, err := loadAppYaml(writeAppYaml(t, "name: x\n")); err == nil {
 		t.Error("expected an error without team")
+	}
+}
+
+func writeAppYamlIn(t *testing.T, dirName, body string) string {
+	t.Helper()
+	dir := filepath.Join(t.TempDir(), dirName)
+	if err := os.Mkdir(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	p := filepath.Join(dir, "app.yaml")
+	if err := os.WriteFile(p, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
+func TestLoadAppYamlDefaultsNameToRepo(t *testing.T) {
+	app, err := loadAppYaml(writeAppYamlIn(t, "cupcake-web", "team: cupcake\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if app.Name != "cupcake-web" {
+		t.Errorf("name = %q, want the repo name", app.Name)
+	}
+}
+
+func TestLoadAppYamlExplainsDottedRepoName(t *testing.T) {
+	_, err := loadAppYaml(writeAppYamlIn(t, "2027.javazone.no", "team: javazoneweb\n"))
+	if err == nil {
+		t.Fatal("expected an error: 2027.javazone.no is not a valid app name")
+	}
+	for _, want := range []string{`"2027.javazone.no"`, "name: javazone-no-2027"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error missing %q:\n%v", want, err)
+		}
+	}
+	if _, err := loadAppYaml(writeAppYaml(t, "name: 2027.javazone.no\nteam: javazoneweb\n")); err == nil ||
+		!strings.Contains(err.Error(), "name: javazone-no-2027") {
+		t.Errorf("invalid name should be rejected with a suggestion, got %v", err)
+	}
+}
+
+func TestSanitizeAppName(t *testing.T) {
+	for in, want := range map[string]string{
+		"2027.javazone.no":            "javazone-no-2027",
+		"java.no":                     "java-no",
+		"Moresleep":                   "moresleep",
+		"a-very-long-repository-name": "a-very-long-reposito",
+		"2024":                        "",
+		"cupcake--web.":               "cupcake-web",
+	} {
+		if got := sanitizeAppName(in); got != want {
+			t.Errorf("sanitizeAppName(%q) = %q, want %q", in, got, want)
+		}
+		if got := sanitizeAppName(in); got != "" && !appNameRE.MatchString(got) {
+			t.Errorf("sanitizeAppName(%q) = %q is not a valid name", in, got)
+		}
 	}
 }
 

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -16,8 +17,10 @@ const (
 	orgName       = "javaBin"
 	registryOwner = "javaBin"
 	registryRepo  = "registry"
-	apiBase       = "https://api.github.com"
 )
+
+// apiBase is a variable so tests can point it at an httptest server.
+var apiBase = "https://api.github.com"
 
 // GetToken returns a GitHub token from gh CLI or environment.
 func GetToken() (string, error) {
@@ -193,4 +196,32 @@ func RepoExists(token, name string) bool {
 
 func getenv(key string) string {
 	return os.Getenv(key)
+}
+
+// ErrNoTeamAccess means the caller may not add repos to the team (not a team
+// maintainer or org owner), or the team does not exist.
+var ErrNoTeamAccess = errors.New("no permission to manage the team's repos")
+
+// AddRepoToTeam gives a GitHub team push access to javaBin/<repo>
+// (PUT /orgs/javaBin/teams/<team>/repos/javaBin/<repo>).
+func AddRepoToTeam(token, team, repo string) error {
+	url := fmt.Sprintf("%s/orgs/%s/teams/%s/repos/%s/%s", apiBase, orgName, team, orgName, repo)
+	data, _ := json.Marshal(map[string]string{"permission": "push"})
+	req, _ := http.NewRequest("PUT", url, bytes.NewReader(data))
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Accept", "application/vnd.github+json")
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	switch {
+	case resp.StatusCode == http.StatusForbidden || resp.StatusCode == http.StatusNotFound:
+		return fmt.Errorf("%w (GitHub API %d: %s)", ErrNoTeamAccess, resp.StatusCode, strings.TrimSpace(string(body)))
+	case resp.StatusCode >= 400:
+		return fmt.Errorf("GitHub API PUT %s: %d %s", req.URL.Path, resp.StatusCode, string(body))
+	}
+	return nil
 }

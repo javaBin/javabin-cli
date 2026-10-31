@@ -7,7 +7,10 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"os/signal"
+	"path/filepath"
+	"regexp"
 	"strings"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -46,10 +49,84 @@ func loadAppYaml(path string) (*appSecrets, error) {
 	if err := yaml.Unmarshal(data, &app); err != nil {
 		return nil, fmt.Errorf("parse %s: %w", path, err)
 	}
-	if app.Name == "" || app.Team == "" {
-		return nil, fmt.Errorf("%s must set name and team", path)
+	if app.Team == "" {
+		return nil, fmt.Errorf("%s must set team", path)
+	}
+	if app.Name == "" {
+		// The platform defaults name to the repo name, but only accepts it if
+		// it is a valid app name.
+		repo := repoName(filepath.Dir(path))
+		if appNameRE.MatchString(repo) {
+			app.Name = repo
+		} else {
+			return nil, missingNameError(path, repo)
+		}
+	}
+	if !appNameRE.MatchString(app.Name) {
+		return nil, fmt.Errorf("%s: name %q must start with a letter and use lowercase letters, digits and hyphens, max 20 chars%s",
+			path, app.Name, suggestName(app.Name))
 	}
 	return &app, nil
+}
+
+// appNameRE is the platform's app.yaml name rule (generate-modules.py NAME_RE).
+var appNameRE = regexp.MustCompile(`^[a-z][a-z0-9-]{0,19}$`)
+
+func missingNameError(path, repo string) error {
+	if repo == "" {
+		return fmt.Errorf("%s has no name; set name: (lowercase letters, digits, hyphens, max 20 chars)", path)
+	}
+	return fmt.Errorf("%s has no name, and the repo name %q is not a valid app name (the platform pipeline rejects it too);\n"+
+		"add a name to app.yaml (lowercase letters, digits, hyphens, start with a letter, max 20 chars)%s", path, repo, suggestName(repo))
+}
+
+func suggestName(s string) string {
+	if n := sanitizeAppName(s); n != "" {
+		return fmt.Sprintf(", e.g.\n  name: %s", n)
+	}
+	return ""
+}
+
+// sanitizeAppName turns a repo name like "2027.javazone.no" into a valid app
+// name ("javazone-no-2027"): lowercase, non-alphanumerics become hyphens,
+// leading numeric parts move to the end, max 20 chars. Returns "" if nothing
+// usable is left.
+func sanitizeAppName(s string) string {
+	parts := regexp.MustCompile(`[^a-z0-9]+`).Split(strings.ToLower(s), -1)
+	var words, numbers []string
+	for _, p := range parts {
+		switch {
+		case p == "":
+		case len(words) == 0 && (p[0] < 'a' || p[0] > 'z'):
+			numbers = append(numbers, p)
+		default:
+			words = append(words, p)
+		}
+	}
+	if len(words) == 0 {
+		return ""
+	}
+	name := strings.Join(append(words, numbers...), "-")
+	if len(name) > 20 {
+		name = strings.TrimRight(name[:20], "-")
+	}
+	return name
+}
+
+// repoName is the GitHub repo name of the checkout in dir (from the origin
+// remote), falling back to the directory name.
+func repoName(dir string) string {
+	if out, err := exec.Command("git", "-C", dir, "remote", "get-url", "origin").Output(); err == nil {
+		url := strings.TrimSuffix(strings.TrimSpace(string(out)), ".git")
+		if i := strings.LastIndexAny(url, "/:"); i >= 0 && i < len(url)-1 {
+			return url[i+1:]
+		}
+	}
+	abs, err := filepath.Abs(dir)
+	if err != nil {
+		return ""
+	}
+	return filepath.Base(abs)
 }
 
 // secretPath is where app.yaml `resources.secrets` entries live in SSM
@@ -84,7 +161,9 @@ var secretCmd = &cobra.Command{
 	Long: `Secrets declared in app.yaml under resources.secrets are created by the
 platform with a PLACEHOLDER value. Set the real values here; they are stored as
 SSM SecureStrings under /javabin/apps/<team>/<app>/ and injected into the
-container at task start. Needs AWS SSO credentials (javabin-developer).`,
+container at task start. Needs your team's AWS SSO role, javabin-team-<team>
+(run "javabin aws setup" once; the profile is picked from app.yaml's team).
+javabin-developer cannot reach team secrets.`,
 }
 
 var secretListCmd = &cobra.Command{
