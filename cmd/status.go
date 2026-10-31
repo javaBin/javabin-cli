@@ -25,7 +25,11 @@ Flags --team and --service override auto-detection. If run from a directory
 with an app.yaml, team and service name are read from it automatically.
 
 Use --resources to show resource-level cost breakdown from CUR data via Athena.
-Use --period to control the time window (day, week, month).`,
+Use --period to control the time window (day, week, month).
+
+AWS credentials: --profile, AWS_PROFILE, or the javabin-team-<team> profile
+written by "javabin aws setup" (picked automatically). Costs are AWS USD
+amounts shown with their approximate NOK value (team budgets are in NOK).`,
 	RunE: runStatus,
 }
 
@@ -79,9 +83,11 @@ func runStatus(cmd *cobra.Command, args []string) error {
 	fmt.Println()
 
 	ctx := context.Background()
-	cfg, err := aws.LoadConfig(ctx)
+	// Same profile resolution as `secret`: --profile, AWS_PROFILE, then the
+	// javabin-team-<team> profile written by `javabin aws setup`.
+	cfg, err := aws.LoadConfigForTeam(ctx, team)
 	if err != nil {
-		return fmt.Errorf("AWS credentials not configured: %w", err)
+		return err
 	}
 
 	// Cost this month
@@ -90,7 +96,7 @@ func runStatus(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		fmt.Printf("  Could not fetch costs: %v\n", err)
 	} else {
-		fmt.Printf("  Team spend: $%.2f\n", cost)
+		fmt.Printf("  Team spend: %s\n", formatCost(cost))
 	}
 
 	// Resource-level breakdown from CUR
@@ -103,7 +109,7 @@ func runStatus(cmd *cobra.Command, args []string) error {
 			fmt.Println("  No CUR data available yet")
 		} else {
 			for _, r := range resources {
-				fmt.Printf("  %-40s %-20s $%.2f\n", r.FriendlyName(), r.Service, r.Cost)
+				fmt.Printf("  %-40s %-20s %s\n", r.FriendlyName(), r.Service, formatCost(r.Cost))
 			}
 		}
 	}
@@ -136,4 +142,15 @@ func runStatus(cmd *cobra.Command, args []string) error {
 	}
 
 	return nil
+}
+
+// usdToNOK is the approximate rate the platform uses to turn team budgets
+// (budget_nok) into USD AWS Budgets and to report costs
+// (platform terraform/lambda-src/shared/constants.py USD_TO_NOK).
+const usdToNOK = 10.5
+
+// formatCost shows an AWS (USD) amount next to its NOK equivalent, the
+// currency team budgets are set in, like the platform's cost reports.
+func formatCost(usd float64) string {
+	return fmt.Sprintf("$%.2f (~%.0f NOK)", usd, usd*usdToNOK)
 }

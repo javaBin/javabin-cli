@@ -8,16 +8,20 @@ import (
 )
 
 func TestRenderAppYamlIncludesRouting(t *testing.T) {
-	got := renderAppYaml("moresleep", "core", "8080", "moresleep.javazone.no", "120")
+	got := renderAppYaml("moresleep", "core", "8080", "moresleep.javazone.no")
 	for _, want := range []string{
 		"name: moresleep\n",
 		"team: core\n",
 		"  port: 8080\n",
-		"routing:\n  host: moresleep.javazone.no\n  priority: 120\n",
+		"routing:\n  host: moresleep.javazone.no\n",
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("app.yaml missing %q:\n%s", want, got)
 		}
+	}
+	// The platform derives a unique priority when it is absent.
+	if strings.Contains(got, "priority") {
+		t.Errorf("app.yaml must not set routing.priority:\n%s", got)
 	}
 }
 
@@ -39,7 +43,7 @@ func TestDeployYamlGrantsPipelinePermissions(t *testing.T) {
 // TestRenderAppYamlGolden pins the full output; it is the file validated
 // against platform/scripts/generate-modules.py.
 func TestRenderAppYamlGolden(t *testing.T) {
-	got := renderAppYaml("initcheck", "platform", "8080", "initcheck.javazone.no", "4242")
+	got := renderAppYaml("initcheck", "platform", "8080", "initcheck.javazone.no")
 	if dir := os.Getenv("INIT_APP_YAML_OUT"); dir != "" {
 		if err := os.WriteFile(filepath.Join(dir, "app.yaml"), []byte(got), 0o644); err != nil {
 			t.Fatal(err)
@@ -54,7 +58,6 @@ compute:
 
 routing:
   host: initcheck.javazone.no
-  priority: 4242
 `
 	if got != want {
 		t.Errorf("app.yaml =\n%s\nwant\n%s", got, want)

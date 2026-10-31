@@ -2,13 +2,16 @@ package cmd
 
 import (
 	"bufio"
+	"bytes"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 
 	"github.com/javaBin/javabin-cli/internal/config"
 	gh "github.com/javaBin/javabin-cli/internal/github"
 	"github.com/spf13/cobra"
+	"gopkg.in/yaml.v3"
 )
 
 var registerCmd = &cobra.Command{
@@ -19,8 +22,47 @@ var registerCmd = &cobra.Command{
 }
 
 type member struct {
-	Google string
-	GitHub string
+	Google string `yaml:"google"`
+	GitHub string `yaml:"github"`
+	// Role is "maintainer" for the first member (the person registering),
+	// who can then add repos to the GitHub team; others default to member.
+	Role string `yaml:"role,omitempty"`
+}
+
+type teamYaml struct {
+	Name        string   `yaml:"name"`
+	Description string   `yaml:"description"`
+	Members     []member `yaml:"members"`
+	BudgetNOK   *int     `yaml:"budget_nok,omitempty"`
+}
+
+// renderTeamYaml serialises teams/<name>.yaml for javaBin/registry. The first
+// member is the team maintainer. budget_nok is omitted at the default (500).
+func renderTeamYaml(name, description string, members []member, budget string) (string, error) {
+	t := teamYaml{Name: name, Description: description}
+	for i, m := range members {
+		if i == 0 {
+			m.Role = "maintainer"
+		}
+		t.Members = append(t.Members, m)
+	}
+	if budget != "" && budget != "500" {
+		n, err := strconv.Atoi(budget)
+		if err != nil || n <= 0 {
+			return "", fmt.Errorf("budget must be a positive whole number of NOK, got %q", budget)
+		}
+		t.BudgetNOK = &n
+	}
+	var buf bytes.Buffer
+	enc := yaml.NewEncoder(&buf)
+	enc.SetIndent(2)
+	if err := enc.Encode(t); err != nil {
+		return "", err
+	}
+	if err := enc.Close(); err != nil {
+		return "", err
+	}
+	return buf.String(), nil
 }
 
 func runRegister(cmd *cobra.Command, args []string) error {
@@ -80,6 +122,9 @@ func runRegister(cmd *cobra.Command, args []string) error {
 
 	// Budget
 	budget := prompt("\nMonthly budget (NOK)", "500")
+	if _, err := renderTeamYaml(teamName, description, members, budget); err != nil {
+		return err
+	}
 
 	// Confirm
 	fmt.Println("\n--- Team Registration Summary ---")
@@ -88,8 +133,12 @@ func runRegister(cmd *cobra.Command, args []string) error {
 	fmt.Printf("  Google Group: team-%s@java.no\n", teamName)
 	fmt.Printf("  Budget:       %s NOK/mo\n", budget)
 	fmt.Println("  Members:")
-	for _, m := range members {
-		fmt.Printf("    - %s (github: %s)\n", m.Google, m.GitHub)
+	for i, m := range members {
+		role := ""
+		if i == 0 {
+			role = ", maintainer"
+		}
+		fmt.Printf("    - %s (github: %s%s)\n", m.Google, m.GitHub, role)
 	}
 	fmt.Println()
 
@@ -99,19 +148,10 @@ func runRegister(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 
-	// Build team YAML content
-	var yamlLines []string
-	yamlLines = append(yamlLines, fmt.Sprintf("name: %s", teamName))
-	yamlLines = append(yamlLines, fmt.Sprintf("description: %s", description))
-	yamlLines = append(yamlLines, "members:")
-	for _, m := range members {
-		yamlLines = append(yamlLines, fmt.Sprintf("  - google: %s", m.Google))
-		yamlLines = append(yamlLines, fmt.Sprintf("    github: %s", m.GitHub))
+	yamlContent, err := renderTeamYaml(teamName, description, members, budget)
+	if err != nil {
+		return fmt.Errorf("render team yaml: %w", err)
 	}
-	if budget != "500" && budget != "" {
-		yamlLines = append(yamlLines, fmt.Sprintf("budget_nok: %s", budget))
-	}
-	yamlContent := strings.Join(yamlLines, "\n") + "\n"
 
 	// Create PR via GitHub API
 	filePath := fmt.Sprintf("teams/%s.yaml", teamName)
@@ -131,7 +171,8 @@ func runRegister(cmd *cobra.Command, args []string) error {
 	fmt.Printf("\nRegistration PR created: %s\n", prURL)
 	fmt.Println("A platform owner will review and merge it.")
 	fmt.Println("\nAfter your team is created, add repos to your GitHub team:")
-	fmt.Printf("  gh api orgs/javaBin/teams/%s/repos -f owner=javaBin -f repo=REPO -f permission=push\n", teamName)
+	fmt.Printf("  gh api -X PUT orgs/javaBin/teams/%s/repos/javaBin/REPO -f permission=push\n", teamName)
+	fmt.Printf("(%s is the team maintainer and can do this; `javabin init` does it for new repos.)\n", members[0].GitHub)
 
 	_ = config.EnsureConfigDir()
 	return nil
